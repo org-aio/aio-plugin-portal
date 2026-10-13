@@ -1,0 +1,21 @@
+{
+  "suffix": "example.internal",
+  "mode": "lan",
+  "lanIp": "192.168.1.10",
+  "hostsFile": "/etc/hosts",
+  "resolver": {
+    "port": 53,
+    "upstreams": ["223.5.5.5", "114.114.114.114"],
+    "service": "aio-portal-dns"
+  },
+  "portal": {
+    "root": "/opt/aio-portal",
+    "mapPrefix": "10-alias",
+    "reload": true
+  },
+  "gateway": {
+    "address": "192.168.1.1",
+    "adapter": "xiaomi",
+    "fallbackDns": "223.5.5.5"
+  }
+}

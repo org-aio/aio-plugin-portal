@@ -1,0 +1,17 @@
+{
+  "name": "aio-plugin-portal",
+  "version": "0.1.0",
+  "description": "登记别名到内网端口映射，生成反向代理分流与内网 DNS 覆盖，并让网关把整片局域网指向本机解析器。",
+  "type": "module",
+  "license": "MIT",
+  "bin": {"aio-plugin-portal": "dist/cli.mjs"},
+  "files": ["dist", "config", "README.md", "skills"],
+  "engines": {"node": ">=22.14.0"},
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "npm run build && node --test",
+    "prepack": "npm run build"
+  },
+  "devDependencies": {"esbuild": "0.28.2"},
+  "publishConfig": {"access": "public", "registry": "https://registry.npmjs.org"}
+}
