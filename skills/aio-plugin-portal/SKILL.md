@@ -1,35 +1,72 @@
 ---
 name: aio-plugin-portal
-description: 维护端口门户：登记“别名→内网 host:port 映射”，生成反向代理按 Host 分流与内网 DNS 覆盖，并把网关上游 DNS 指向本机解析器，让局域网所有设备无感走内网。当用户要新增/删除 xxx.addzero.site 之类的别名站点、排查内外网解析差异、或让同事整片局域网零配置走内网时使用。
+description: 维护端口门户：登记“别名→内网 host:port 映射”，在一套期望态里协调 DNS（本地 dnsmasq / Cloudflare / 腾讯云 DNSPod / 华为云）、反向代理（Caddy）、证书与访问策略，让指定域名仅内网可达。当用户要新增/删除 xxx.addzero.site 之类的别名站点、排查内外网解析差异、要求“仅内网访问不允许公网访问”、或让同事整片局域网零配置走内网时使用。
 ---
 
 # 端口门户
 
-一次登记同时产生两件事：反向代理按 Host 把 `<别名>.<suffix>` 分流到目标端口；内网 DNS 把该名字解析到本机，于是**内网直达、外网仍走原隧道**。
+一次登记同时产生并校验：内网 DNS 覆盖（只覆盖 `visibility=internal`）、按 Host 分流的反代站点、
+证书来源、访问策略。**内网直达本机，公网是否可达由登记项的 `visibility` 决定。**
 
 先执行 `aio-plugin-portal --help` 核对当前命令，`aio-plugin-portal --version` 确认版本。未全局安装时用 `npx -y aio-plugin-portal`。
 
 ## 常用命令
 
 ```sh
-aio-plugin-portal add tc --port 8111 --host 192.168.31.10 --note TeamCity
-aio-plugin-portal add only-public --port 9000 --no-lan     # 只做分流，不做内网覆盖
+aio-plugin-portal add tc --port 8111 --host 127.0.0.1 --note TeamCity
+aio-plugin-portal add only-public --port 9000 --visibility public --authorized-by alice
 aio-plugin-portal list
 aio-plugin-portal remove tc
-aio-plugin-portal sync                                     # 按注册表重建映射+解析并热加载
-aio-plugin-portal doctor                                   # 配置与产物体检
-aio-plugin-portal warden --password '<网关密码>'            # 只读探测网关
-aio-plugin-portal warden --password '<网关密码>' --apply    # 让整片局域网走内网
-aio-plugin-portal warden --password '<网关密码>' --restore  # 回滚网关 DNS
+aio-plugin-portal plan                                          # 只出计划，不写任何东西
+aio-plugin-portal sync                                          # 渲染产物 + 执行 provider + 校验
+aio-plugin-portal sync --apply                                  # 允许 provider 真实写入
+aio-plugin-portal doctor                                        # 配置与产物体检
+aio-plugin-portal warden --password '<网关密码>'                # 只读探测网关
+aio-plugin-portal warden --password '<网关密码>' --apply        # 让整片局域网走内网
+aio-plugin-portal warden --password '<网关密码>' --restore      # 回滚网关 DNS
 ```
+
+## 内网 / 公网边界
+
+`visibility` 是安全边界，不是展示字段：
+
+- `internal`（默认）：永不产生公网 DNS 记录；Caddy 站点要求 `bind <入口地址>` + `remote_ip` 白名单，
+  未命中 `respond 404`。缺 `caddy.bind` 时 verify 判失败。
+- `public`：必须同时满足 `allowPublicWrite: true` + 有凭据 + 登记了 `authorizedBy`，否则计划被标记
+  `blocked`，`sync --apply` 拒绝执行。
+
+`blocked` 的计划一律不 apply；verify 重新读取远端/产物，不用本地计划冒充成功。
+
+> 边界代价：只在经过本机 Caddy 的路径上成立。若同名域名在公网 DNS 或别的入口仍指向旧隧道，
+> 那部分流量不归本机管；真正“仅内网”还要清掉对应公网记录，先确认目标记录再动。
+
+## provider 组合
+
+四类 provider 独立组合，登记项可用 `providers` 字段单条覆盖：
+
+| 类别 | 可用值 |
+|---|---|
+| `dns` | `local-dnsmasq`、`cloudflare`、`dnspod`（腾讯云）、`huawei`（华为云） |
+| `connectivity` | `caddy`、`aio-tunnel`、`cloudflared` |
+| `certificate` | `internal-ca`、`acme` |
+| `policy` | `lan-allowlist`、`aio-auth`、`public` |
+
+云 DNS 凭据只从环境变量读取（`credentialsEnv` 指向变量名），不写进注册表或配置文件。
+腾讯云 DNSPod 走 `Record.List/Create/Modify`；华为云用 Zone ID + IAM `X-Auth-Token`，
+长期 AK/SK 签名尚未实现，未配置 token 时只给可审计的计划。
 
 ## 配置
 
 宿主相关的值全部来自配置，源码不含域名、网段、账号或部署目录：
 
 - 默认读取 `~/.config/aio-portal/aio-portal.json`，可用 `--home` 或环境变量 `AIO_PORTAL_HOME` 覆盖。
-- 必填 `suffix`（域名后缀）；`mode`、`lanIp`、`resolver.upstreams/port/service`、`portal.aliasesDir/mapPrefix/reload`、`gateway.address/adapter/fallbackDns` 均可配置。
+- 必填 `suffix`（域名后缀）；`mode`、`lanIp`、`resolver.*`、`portal.*`、`gateway.*`、`caddy.*`、`providers.*` 均可配置。
 - 新增站点只改注册表（`aio-plugin-portal add` 或编辑 `aliases.json`），无需改代码。
+
+## 与配对机制的边界
+
+设备配对复用 `aio-plugin-device` 的短时票据闭环（签发 → 登录确认 → 轮询换取凭据 → 心跳/租约 → 可撤销）。
+本工具只负责把已存在的目标端口登记成可达站点并钉死可见范围，不另造隧道。
 
 ## 约定
 

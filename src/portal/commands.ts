@@ -3,8 +3,9 @@ import {existsSync} from 'node:fs';
 import type {Alias, PortalSettings} from '../config/index.js';
 import {loadSettings} from '../config/index.js';
 import {gatewayAdapter} from './gateway.js';
-import {aliasFqdn, remove, upsert, readAliases} from './registry.js';
-import {render, reloadResolver} from './render.js';
+import {aliasFqdn, remove, upsert, readAliases, snapshot} from './registry.js';
+import {render, reloadResolver, validateCaddy, reloadCaddy} from './render.js';
+import {reconcile, formatReport} from './reconcile.js';
 
 const isAlias = (value: string) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(value);
 const isHost = (value: string) => /^[A-Za-z0-9_.:-]+$/.test(value);
@@ -16,23 +17,26 @@ const parsePort = (value: string) => {
 
 const settings = (home?: string) => loadSettings(home);
 
-export function add(options: {alias: string; host: string; port: string; scheme: string; note?: string; lan: boolean; home?: string}): string {
+export function add(options: {alias: string; host: string; port: string; scheme: string; note?: string; visibility: 'internal' | 'public'; authorizedBy?: string; home?: string}): string {
   const s = settings(options.home);
   if (!isAlias(options.alias)) throw new Error('别名只能使用小写字母、数字和连字符');
   if (!isHost(options.host)) throw new Error('目标主机不合法');
   if (options.scheme !== 'http' && options.scheme !== 'https') throw new Error('协议只能是 http 或 https');
+  if (options.visibility === 'public' && !options.authorizedBy) throw new Error('public 别名必须提供 --authorized-by，明确记录授权人');
   const entry: Alias = {
     alias: options.alias,
     host: options.host,
     port: parsePort(options.port),
     scheme: options.scheme,
-    lan: options.lan && s.mode !== 'none',
+    visibility: options.visibility,
+    lan: options.visibility === 'internal' && s.mode !== 'none',
+    authorizedBy: options.authorizedBy,
     note: options.note ?? '',
   };
   const registry = upsert(s, entry);
   const result = render(s);
   return [
-    `已登记 ${aliasFqdn(s, entry.alias)} -> ${entry.scheme}://${entry.host}:${entry.port}（共 ${result.aliases} 条）`,
+    `已登记 ${aliasFqdn(s, entry.alias)} -> ${entry.scheme}://${entry.host}:${entry.port}（${entry.visibility}，共 ${result.aliases} 条）`,
     renderReload(s),
   ].join('\n');
 }
@@ -50,14 +54,33 @@ export function list(options: {home?: string}): string {
   const aliases = readAliases(s);
   if (!aliases.length) return '（空）';
   return aliases
-    .map(item => `  ${aliasFqdn(s, item.alias).padEnd(30)} -> ${item.scheme}://${item.host}:${item.port}  内网:${item.lan ? '开' : '关'}  ${item.note ?? ''}`)
+    .map(item => `  ${aliasFqdn(s, item.alias).padEnd(30)} -> ${item.scheme}://${item.host}:${item.port}  ${item.visibility ?? 'internal'}  ${item.note ?? ''}`)
     .join('\n');
 }
 
-export function sync(options: {home?: string}): string {
+export async function sync(options: {home?: string; apply?: boolean}): Promise<string> {
   const s = settings(options.home);
+  const before = snapshot(s);
   const result = render(s);
-  return [`已生成 ${result.aliases} 条映射`, renderReload(s)].join('\n');
+  const report = await reconcile(s, {apply: options.apply});
+  const after = snapshot(s);
+  if (before !== after) throw new Error('同步过程中注册表被其它进程修改，请重试');
+  const lines = [
+    `已生成 ${result.aliases} 条映射与 ${result.caddy.length} 个 Caddy 站点`,
+    renderReload(s),
+    validateCaddy(s),
+    reloadCaddy(s),
+    formatReport(report),
+  ];
+  if (!report.ok) {
+    throw new Error(`${lines.join('\n')}\n同步被拒绝：存在未满足的 provider 计划或校验，未发布任何变更`);
+  }
+  return lines.join('\n');
+}
+
+export async function plan(options: {home?: string}): Promise<string> {
+  const s = settings(options.home);
+  return formatReport(await reconcile(s, {apply: false}));
 }
 
 function renderReload(s: PortalSettings): string {
@@ -76,9 +99,13 @@ export function doctor(options: {home?: string}): string {
     `  注册表          ${readAliases(s).length} 条`,
     `  映射片段        ${rendered ? '已生成' : '缺失'}`,
     `  解析配置        ${resolved ? '已生成' : '缺失'}`,
+    `  Caddy provider  ${s.providers?.connectivity ?? 'caddy'}  sites=${s.caddy?.sitesDir ?? '（未配置）'}  bind=${s.caddy?.bind ?? '（未配置）'}`,
     `  网关适配器      ${s.gateway.adapter}${s.gateway.address ? ` @ ${s.gateway.address}` : '（未配置地址）'}`,
   ];
-  const ok = rendered && resolved && Boolean(s.suffix) && Boolean(s.lanIp || s.mode !== 'lan');
+  const internal = readAliases(s).filter(item => (item.visibility ?? 'internal') === 'internal');
+  const guard = internal.every(item => Boolean(s.caddy?.bind) && Boolean(s.caddy?.allow?.length));
+  if (!guard) lines.push('  内网防护        internal 别名缺少 caddy.bind 或 caddy.allow');
+  const ok = rendered && resolved && Boolean(s.suffix) && Boolean(s.lanIp || s.mode !== 'lan') && guard;
   return [...lines, ok ? '体检通过' : '存在缺失项，请先执行 sync 或补齐配置'].join('\n');
 }
 

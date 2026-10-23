@@ -1,7 +1,7 @@
 {
   "name": "aio-plugin-portal",
-  "version": "0.1.0",
-  "description": "登记别名到内网端口映射，生成反向代理分流与内网 DNS 覆盖，并让网关把整片局域网指向本机解析器。",
+  "version": "0.2.0",
+  "description": "在期望态里协调 DNS（本地/Cloudflare/腾讯云/华为云）、Caddy 反代、证书与内网访问策略，把别名站点的可见范围钉死在登记表里。",
   "type": "module",
   "license": "MIT",
   "bin": {

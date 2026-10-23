@@ -14,6 +14,12 @@ export function writeRegistry(s: PortalSettings, registry: Registry): void {
   renameSync(tmp, file);
 }
 
+/** 读取注册表并保留原始内容；plan/sync 在未显式修改时不得改写别名与授权信息。 */
+export function snapshot(s: PortalSettings): string | null {
+  const file = registryFile(s);
+  return existsSync(file) ? readFileSync(file, 'utf8') : null;
+}
+
 export function upsert(s: PortalSettings, entry: Alias): Registry {
   const registry = loadRegistry(s);
   const next = registry.aliases.filter(item => item.alias !== entry.alias);

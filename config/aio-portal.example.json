@@ -6,7 +6,11 @@
   "resolver": {
     "port": 53,
     "upstreams": ["223.5.5.5", "114.114.114.114"],
-    "service": "aio-portal-dns"
+    "service": "aio-portal-dns",
+    "provider": "dnsmasq",
+    "fragment": true,
+    "configFile": "/etc/dnsmasq.d/intranet/20-aio-portal.conf",
+    "testCommand": ["dnsmasq", "--test"]
   },
   "portal": {
     "root": "/opt/aio-portal",
@@ -17,5 +21,42 @@
     "address": "192.168.1.1",
     "adapter": "xiaomi",
     "fallbackDns": "223.5.5.5"
+  },
+  "caddy": {
+    "sitesDir": "/opt/aio-portal/caddy/sites",
+    "prefix": "portal-",
+    "bind": "192.168.1.10",
+    "allow": ["192.168.1.0/24", "10.144.144.0/24"],
+    "denyStatus": 404,
+    "binary": "caddy"
+  },
+  "providers": {
+    "dns": "local-dnsmasq",
+    "connectivity": "caddy",
+    "certificate": "internal-ca",
+    "policy": "lan-allowlist",
+    "cloud": {
+      "cloudflare": {
+        "enabled": false,
+        "zone": "example.internal",
+        "ttl": 120,
+        "credentialsEnv": "CLOUDFLARE_API_TOKEN",
+        "allowPublicWrite": false
+      },
+      "dnspod": {
+        "enabled": false,
+        "zone": "example.internal",
+        "ttl": 120,
+        "credentialsEnv": "TENCENT_CLOUD_SECRET_ID",
+        "allowPublicWrite": false
+      },
+      "huawei": {
+        "enabled": false,
+        "zone": "example.internal",
+        "ttl": 120,
+        "credentialsEnv": "HUAWEI_CLOUD_TOKEN",
+        "allowPublicWrite": false
+      }
+    }
   }
 }

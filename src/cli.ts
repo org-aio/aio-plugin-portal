@@ -1,16 +1,19 @@
 #!/usr/bin/env node
 import {parseArgs} from 'node:util';
-import {add, doctor, list, removeAlias, sync, warden} from './portal/commands.js';
+import {add, doctor, list, plan, removeAlias, sync, warden} from './portal/commands.js';
 
 declare const PACKAGE_VERSION: string;
 
 const USAGE = `aio-plugin-portal <命令> [选项]
 
 命令:
-  add <别名> --port <端口> [--host <主机>] [--scheme http|https] [--note <备注>] [--no-lan]
+  add <别名> --port <端口> [--host <主机>] [--scheme http|https] [--note <备注>]
+  add <别名> --port <端口> --visibility public --authorized-by <授权人>
+  （public 必须显式授权；旧 --no-lan 只表示不做内网 DNS，不再自动算授权）
   remove <别名>
   list
-  sync
+  plan
+  sync [--apply]
   doctor
   warden [--password <网关密码>] [--apply] [--restore]
 
@@ -31,6 +34,8 @@ async function main(): Promise<void> {
       note: {type: 'string'},
       lan: {type: 'boolean', default: true},
       'no-lan': {type: 'boolean', default: false},
+      visibility: {type: 'string'},
+      'authorized-by': {type: 'string'},
       home: {type: 'string'},
       password: {type: 'string'},
       apply: {type: 'boolean', default: false},
@@ -50,8 +55,10 @@ async function main(): Promise<void> {
     case 'add': {
       if (!argument) throw new Error('add 需要别名');
       if (values.port === undefined) throw new Error('add 需要 --port');
-      const lan = values.lan && !values['no-lan'];
-      console.log(add({alias: argument, host: values.host, port: values.port, scheme: values.scheme, note: values.note, lan, home: values.home}));
+      const visibility = values.visibility ?? (values['no-lan'] || !values.lan ? 'public' : 'internal');
+      if (visibility !== 'internal' && visibility !== 'public') throw new Error('--visibility 只能是 internal 或 public');
+      const authorizedBy = values['authorized-by'];
+      console.log(add({alias: argument, host: values.host, port: values.port, scheme: values.scheme, note: values.note, visibility, authorizedBy, home: values.home}));
       return;
     }
     case 'remove': {
@@ -62,8 +69,11 @@ async function main(): Promise<void> {
     case 'list':
       console.log(list({home: values.home}));
       return;
+    case 'plan':
+      console.log(await plan({home: values.home}));
+      return;
     case 'sync':
-      console.log(sync({home: values.home}));
+      console.log(await sync({home: values.home, apply: values.apply}));
       return;
     case 'doctor':
       console.log(doctor({home: values.home}));
