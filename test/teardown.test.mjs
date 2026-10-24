@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
-import {mkdtempSync, writeFileSync, readFileSync, existsSync, readdirSync, chmodSync} from 'node:fs';
+import {mkdtempSync, writeFileSync, readFileSync, existsSync, readdirSync, chmodSync, statSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 
@@ -155,6 +155,13 @@ test('stream 打开时渲染 flush_interval -1，关闭后不再出现', () => {
   assert.doesNotMatch(readFileSync(site, 'utf8'), /flush_interval/);
   cli({AIO_PORTAL_HOME: dir}, 'update', 'sse', '--stream');
   assert.match(readFileSync(site, 'utf8'), /flush_interval -1/);
+});
+
+test('解析片段写成 0644：非 root 的 dnsmasq 才能加载', () => {
+  const dir = home();
+  cli({AIO_PORTAL_HOME: dir}, 'add', 'svc', '--port', '8010');
+  const mode = statSync(join(dir, 'dns', 'aio-portal.conf')).mode & 0o777;
+  assert.equal(mode.toString(8), '644');
 });
 
 test('disable 停止产出产物，enable 恢复', () => {

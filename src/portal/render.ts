@@ -6,7 +6,7 @@
  * 生成结果只依赖配置与注册表，随后按需 reload 服务。
  */
 import {execFileSync} from 'node:child_process';
-import {existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
+import {chmodSync, existsSync, statSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import type {Alias, PortalSettings} from '../config/index.js';
 import {fqdnOf, readAliases} from './registry.js';
@@ -126,6 +126,9 @@ export function render(settings: PortalSettings): RenderResult {
         ...overrides,
       ];
   writeFileSync(resolver, `${lines.join('\n')}\n`);
+  // 解析器通常以非 root 用户运行（Ubuntu 的 dnsmasq 是 `dnsmasq` 用户），
+  // 0600 会让它静默忽略整个片段——配置语法正确、进程正常，解析却完全不生效。
+  chmodSync(resolver, 0o644);
   return {aliases: aliases.length, files, resolver, caddy: renderCaddy(s)};
 }
 
@@ -164,6 +167,12 @@ export function reloadResolver(settings: PortalSettings): string {
   const binary = settings.resolver.dnsmasqBinary ?? (existsSync('/usr/sbin/dnsmasq') ? '/usr/sbin/dnsmasq' : 'dnsmasq');
   const test = run(binary, ['--test', `--conf-file=${settings.resolver.configFile}`]);
   if (test.code !== 0) return `解析配置校验失败：${test.out}`;
+  const mode = statSync(settings.resolver.configFile).mode & 0o777;
+  if (mode & 0o044) {
+    // ok：其它用户/组可读，服务身份能加载
+  } else {
+    return `解析配置权限 ${mode.toString(8)} 非组/其他可读，dnsmasq 会跳过该片段，请改成 0644`;
+  }
   if (settings.resolver.service) {
     const reload = run('systemctl', ['reload-or-restart', settings.resolver.service]);
     return reload.code === 0 ? '内网解析已刷新' : `内网解析刷新失败：${reload.out}`;
