@@ -1,7 +1,7 @@
 {
   "name": "aio-plugin-portal",
-  "version": "0.2.0",
-  "description": "在期望态里协调 DNS（本地/Cloudflare/腾讯云/华为云）、Caddy 反代、证书与内网访问策略，把别名站点的可见范围钉死在登记表里。",
+  "version": "0.3.0",
+  "description": "在期望态里协调 DNS（本地/Cloudflare/腾讯云/华为云）、Caddy 反代、证书与内网访问策略，把别名站点的可见范围钉死在登记表里；删除一条记录会连带清干净站点、解析与映射产物并反向校验。",
   "type": "module",
   "license": "MIT",
   "bin": {

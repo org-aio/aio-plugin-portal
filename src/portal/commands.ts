@@ -1,11 +1,13 @@
 /** 门户子命令实现：登记、同步、校验、体检、网关窗口。 */
-import {existsSync} from 'node:fs';
+import {existsSync, readFileSync, readdirSync, rmSync, writeFileSync} from 'node:fs';
+import {join} from 'node:path';
 import type {Alias, PortalSettings} from '../config/index.js';
 import {loadSettings} from '../config/index.js';
 import {gatewayAdapter} from './gateway.js';
-import {aliasFqdn, remove, upsert, readAliases, snapshot} from './registry.js';
+import {fqdnOf, remove, upsert, readAliases, snapshot, suffixOf} from './registry.js';
 import {render, reloadResolver, validateCaddy, reloadCaddy} from './render.js';
 import {reconcile, formatReport} from './reconcile.js';
+import {captureArtifacts, removeCaddySite, restoreArtifacts, verifyGone} from './teardown.js';
 
 const isAlias = (value: string) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(value);
 const isHost = (value: string) => /^[A-Za-z0-9_.:-]+$/.test(value);
@@ -17,7 +19,88 @@ const parsePort = (value: string) => {
 
 const settings = (home?: string) => loadSettings(home);
 
-export function add(options: {alias: string; host: string; port: string; scheme: string; note?: string; visibility: 'internal' | 'public'; authorizedBy?: string; home?: string}): string {
+/**
+ * 全部产物的快照：注册表 + Caddy 站点目录 + 解析片段 + 映射目录。
+ * 用于「改了就校验」失败时整体回滚，避免半完成状态留在磁盘上。
+ */
+type PortalSnapshot = {
+  registry: string | null;
+  sites: Map<string, string | null>;
+  resolver: string | null;
+  maps: Map<string, string | null>;
+};
+
+function snapshotAll(s: PortalSettings): PortalSnapshot {
+  const sites = new Map<string, string | null>();
+  const sitesDir = s.caddy?.sitesDir;
+  if (sitesDir) {
+    for (const name of existsSync(sitesDir) ? readdirSync(sitesDir) : []) {
+      if (!name.startsWith(s.caddy?.prefix ?? 'portal-') || !name.endsWith('.caddy')) continue;
+      const path = join(sitesDir, name);
+      sites.set(path, readFileSync(path, 'utf8'));
+    }
+  }
+  const maps = new Map<string, string | null>();
+  const dir = s.portal.aliasesDir;
+  if (dir) {
+    for (const name of [`${s.portal.mapPrefix}.map`, `${s.portal.mapPrefix}.scheme`, `${s.portal.mapPrefix}.host`]) {
+      const path = join(dir, name);
+      if (existsSync(path)) maps.set(path, readFileSync(path, 'utf8'));
+    }
+  }
+  const resolver = s.resolver.configFile;
+  return {
+    registry: snapshot(s),
+    sites,
+    maps,
+    resolver: resolver && existsSync(resolver) ? readFileSync(resolver, 'utf8') : null,
+  };
+}
+
+function restoreAll(s: PortalSettings, snap: PortalSnapshot): void {
+  const regFile = join(s.portal.root, 'aliases.json');
+  if (snap.registry === null) {
+    if (existsSync(regFile)) rmSync(regFile);
+  } else {
+    writeFileSync(regFile, snap.registry, {mode: 0o600});
+  }
+  const sitesDir = s.caddy?.sitesDir;
+  if (sitesDir && existsSync(sitesDir)) {
+    for (const name of readdirSync(sitesDir)) {
+      const path = join(sitesDir, name);
+      if (snap.sites.has(path)) continue;
+      if (name.startsWith(s.caddy?.prefix ?? 'portal-') && name.endsWith('.caddy')) rmSync(path);
+    }
+  }
+  for (const [path, text] of snap.sites) if (text !== null) writeFileSync(path, text);
+  for (const [path, text] of snap.maps) if (text !== null) writeFileSync(path, text);
+  const resolver = s.resolver.configFile;
+  if (resolver) {
+    if (snap.resolver === null) {
+      if (existsSync(resolver)) rmSync(resolver);
+    } else {
+      writeFileSync(resolver, snap.resolver);
+    }
+  }
+}
+
+/**
+ * 注册表已改动的收尾：渲染产物 + 刷新解析器。
+ * 任何一步失败都回滚到快照并抛错——调用方拿到异常时，磁盘上不会留下半完成状态。
+ */
+function finish(s: PortalSettings, snap: PortalSnapshot, message: string): string {
+  try {
+    const rendered = render(s);
+    const reload = renderReload(s);
+    if (/校验失败/.test(reload)) throw new Error(reload);
+    return [message(rendered.aliases), reload].join('\n');
+  } catch (error) {
+    restoreAll(s, snap);
+    throw new Error(`本次变更未生效，已回滚：${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+export function add(options: {alias: string; host: string; port: string; scheme: string; note?: string; visibility: 'internal' | 'public'; authorizedBy?: string; suffix?: string; home?: string}): string {
   const s = settings(options.home);
   if (!isAlias(options.alias)) throw new Error('别名只能使用小写字母、数字和连字符');
   if (!isHost(options.host)) throw new Error('目标主机不合法');
@@ -32,21 +115,50 @@ export function add(options: {alias: string; host: string; port: string; scheme:
     lan: options.visibility === 'internal' && s.mode !== 'none',
     authorizedBy: options.authorizedBy,
     note: options.note ?? '',
+    ...(options.suffix ? {suffix: options.suffix} : {}),
   };
-  const registry = upsert(s, entry);
-  const result = render(s);
-  return [
-    `已登记 ${aliasFqdn(s, entry.alias)} -> ${entry.scheme}://${entry.host}:${entry.port}（${entry.visibility}，共 ${result.aliases} 条）`,
-    renderReload(s),
-  ].join('\n');
+  if (entry.suffix && !/^[a-z0-9.-]+$/.test(entry.suffix)) throw new Error(`域名后缀不合法：${entry.suffix}`);
+  const snap = snapshotAll(s);
+  upsert(s, entry);
+  return finish(s, snap, total =>
+    `已登记 ${fqdnOf(s, entry)} -> ${entry.scheme}://${entry.host}:${entry.port}（${entry.visibility}，共 ${total} 条）`);
 }
 
+/**
+ * 删除一条登记，并把它在三处产物里的痕迹一并清掉。
+ *
+ * 顺序：快照 → 删注册表 → 删站点文件 → 重写产物 → 反向校验。
+ * 任何一步校验不过就把快照整体写回，恢复成删除前的样子并抛错，
+ * 绝不留下「注册表没了、站点还在」的半删状态。
+ */
 export function removeAlias(options: {alias: string; home?: string}): string {
   const s = settings(options.home);
+  const target = readAliases(s).find(item => item.alias === options.alias);
+  if (!target) throw new Error(`未找到别名：${options.alias}`);
+  const fqdn = fqdnOf(s, target);
+  const before = captureArtifacts(s, options.alias);
+  const registryBefore = snapshot(s);
   const result = remove(s, options.alias);
-  if (!result.removed) throw new Error(`未找到别名：${options.alias}`);
-  const rendered = render(s);
-  return [`已删除 ${aliasFqdn(s, options.alias)}（剩余 ${rendered.aliases} 条）`, renderReload(s)].join('\n');
+  const removedFiles = removeCaddySite(s, options.alias);
+  try {
+    const rendered = render(s);
+    const verified = verifyGone(s, options.alias);
+    const failed = verified.filter(item => !item.ok);
+    if (failed.length) {
+      throw new Error(`删除后仍存在残留：${failed.map(item => item.detail).join('；')}`);
+    }
+    return [
+      `已删除 ${fqdn}（剩余 ${rendered.aliases} 条）`,
+      `已清理：注册表 1 条、站点文件 ${removedFiles.length} 个、解析与映射产物已重写`,
+      ...verified.map(item => `  校验 ${item.artifact}: ${item.detail}`),
+      renderReload(s),
+    ].join('\n');
+  } catch (error) {
+    restoreArtifacts(before);
+    // 注册表也要回到删除前；否则会出现「记录没了、产物回来了」的逆向半删状态。
+    if (registryBefore !== null) writeFileSync(join(s.portal.root, 'aliases.json'), registryBefore, {mode: 0o600});
+    throw new Error(`删除 ${fqdn} 失败，已回滚到删除前状态：${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 export function list(options: {home?: string}): string {
@@ -54,7 +166,7 @@ export function list(options: {home?: string}): string {
   const aliases = readAliases(s);
   if (!aliases.length) return '（空）';
   return aliases
-    .map(item => `  ${aliasFqdn(s, item.alias).padEnd(30)} -> ${item.scheme}://${item.host}:${item.port}  ${item.visibility ?? 'internal'}  ${item.note ?? ''}`)
+    .map(item => `  ${fqdnOf(s, item).padEnd(30)} -> ${item.scheme}://${item.host}:${item.port}  ${item.visibility ?? 'internal'}${item.disabled ? ' [已停用]' : ''}  ${item.note ?? ''}`)
     .join('\n');
 }
 
@@ -137,3 +249,131 @@ export async function warden(options: {password?: string; apply?: boolean; resto
   await adapter.apply({dns1: s.lanIp, dns2: s.gateway.fallbackDns ?? '223.5.5.5'});
   return [head, `已把网关上游 DNS 设为 ${s.lanIp}（兜底 ${s.gateway.fallbackDns}）。局域网设备无需任何设置即自动走内网。`].join('\n');
 }
+
+/** 表格行：给页面/前端用的扁平结构，不含任何凭据。 */
+export type PortalRow = {
+  alias: string;
+  fqdn: string;
+  scheme: 'http' | 'https';
+  host: string;
+  port: number;
+  visibility: 'internal' | 'public';
+  disabled: boolean;
+  note: string;
+  authorizedBy?: string;
+  /** 该行产物是否齐全（站点文件 + 解析覆盖都在）。 */
+  rendered: boolean;
+};
+
+export type QueryOptions = {
+  home?: string;
+  /** 按别名、备注、目标主机做大小写不敏感的子串检索。 */
+  search?: string;
+  visibility?: 'internal' | 'public';
+  disabled?: boolean;
+  sort?: 'alias' | 'visibility' | 'host' | 'port';
+  order?: 'asc' | 'desc';
+  page?: number;
+  pageSize?: number;
+};
+
+export type QueryResult = {items: PortalRow[]; total: number; page: number; pageSize: number; pages: number};
+
+const rowOf = (s: PortalSettings, item: Alias): PortalRow => {
+  const sitesDir = s.caddy?.sitesDir;
+  const site = sitesDir ? join(sitesDir, `${s.caddy?.prefix ?? 'portal-'}${item.alias}.caddy`) : '';
+  const resolver = s.resolver.configFile;
+  const dnsOk = resolver && existsSync(resolver)
+    ? new RegExp(`^address=/${fqdnOf(s, item).replace(/\./g, '\\.')}/`, 'm').test(readFileSync(resolver, 'utf8'))
+    : false;
+  return {
+    alias: item.alias,
+    fqdn: fqdnOf(s, item),
+    scheme: item.scheme,
+    host: item.host,
+    port: item.port,
+    visibility: item.visibility ?? 'internal',
+    disabled: item.disabled === true,
+    note: item.note ?? '',
+    authorizedBy: item.authorizedBy,
+    rendered: (item.disabled ? true : Boolean(site && existsSync(site))) && (item.disabled || item.visibility === 'public' ? true : dnsOk),
+  };
+};
+
+/** 查询登记表：检索 → 过滤 → 排序 → 分页。页面表格直接消费这个结果。 */
+export function query(options: QueryOptions = {}): QueryResult {
+  const s = settings(options.home);
+  const term = (options.search ?? '').trim().toLowerCase();
+  let items = readAliases(s).map(item => rowOf(s, item));
+  if (term) {
+    items = items.filter(row =>
+      [row.alias, row.fqdn, row.host, row.note].some(value => value.toLowerCase().includes(term)));
+  }
+  if (options.visibility) items = items.filter(row => row.visibility === options.visibility);
+  if (options.disabled !== undefined) items = items.filter(row => row.disabled === options.disabled);
+  const key = options.sort ?? 'alias';
+  const direction = options.order === 'desc' ? -1 : 1;
+  items.sort((a, b) => {
+    const left = key === 'port' ? a.port : String(a[key]);
+    const right = key === 'port' ? b.port : String(b[key]);
+    return left < right ? -direction : left > right ? direction : 0;
+  });
+  const pageSize = Math.max(1, options.pageSize ?? 50);
+  const pages = Math.max(1, Math.ceil(items.length / pageSize));
+  const page = Math.min(Math.max(1, options.page ?? 1), pages);
+  return {items: items.slice((page - 1) * pageSize, page * pageSize), total: items.length, page, pageSize, pages};
+}
+
+/** 修改现有登记。未给出的字段保持原值，避免整行覆盖丢掉 authorizedBy 等审计字段。 */
+export function update(options: {
+  alias: string;
+  home?: string;
+  host?: string;
+  port?: string;
+  scheme?: string;
+  note?: string;
+  visibility?: string;
+  authorizedBy?: string;
+  suffix?: string;
+}): string {
+  const s = settings(options.home);
+  const existing = readAliases(s).find(item => item.alias === options.alias);
+  if (!existing) throw new Error(`未找到别名：${options.alias}`);
+  const visibility = (options.visibility ?? existing.visibility ?? 'internal') as 'internal' | 'public';
+  if (visibility !== 'internal' && visibility !== 'public') throw new Error('visibility 只能是 internal 或 public');
+  if (options.scheme && options.scheme !== 'http' && options.scheme !== 'https') throw new Error('协议只能是 http 或 https');
+  const host = options.host ?? existing.host;
+  if (!isHost(host)) throw new Error('目标主机不合法');
+  const next: Alias = {
+    ...existing,
+    host,
+    port: options.port === undefined ? existing.port : parsePort(options.port),
+    scheme: (options.scheme ?? existing.scheme) as 'http' | 'https',
+    note: options.note ?? existing.note ?? '',
+    visibility,
+    lan: visibility === 'internal',
+    authorizedBy: options.authorizedBy ?? existing.authorizedBy,
+  };
+  if (options.suffix !== undefined) {
+    if (options.suffix && !/^[a-z0-9.-]+$/.test(options.suffix)) throw new Error(`域名后缀不合法：${options.suffix}`);
+    if (options.suffix) next.suffix = options.suffix; else delete next.suffix;
+  }
+  if (visibility === 'public' && !next.authorizedBy) throw new Error('public 别名必须保留或重新提供授权人（authorizedBy）');
+  const snap = snapshotAll(s);
+  upsert(s, next);
+  return finish(s, snap, total =>
+    `已更新 ${fqdnOf(s, next)} -> ${next.scheme}://${next.host}:${next.port}（${next.visibility}，共 ${total} 条）`);
+}
+
+/** 启停：停用不删数据，只是不再产出站点/解析，便于临时下线后恢复。 */
+export function setEnabled(options: {alias: string; enabled: boolean; home?: string}): string {
+  const s = settings(options.home);
+  const existing = readAliases(s).find(item => item.alias === options.alias);
+  if (!existing) throw new Error(`未找到别名：${options.alias}`);
+  const snap = snapshotAll(s);
+  upsert(s, {...existing, disabled: !options.enabled});
+  return finish(s, snap, total =>
+    `${options.enabled ? '已启用' : '已停用'} ${fqdnOf(s, existing)}（参与渲染 ${total} 条）`);
+}
+
+export {suffixOf};

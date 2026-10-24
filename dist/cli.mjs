@@ -4,7 +4,8 @@
 import { parseArgs } from "node:util";
 
 // src/portal/commands.ts
-import { existsSync as existsSync4 } from "node:fs";
+import { existsSync as existsSync5, readFileSync as readFileSync5, readdirSync as readdirSync3, rmSync as rmSync3, writeFileSync as writeFileSync4 } from "node:fs";
+import { join as join4 } from "node:path";
 
 // src/config/index.ts
 import { homedir } from "node:os";
@@ -51,7 +52,7 @@ function loadSettings(rootOverride) {
 var registryFile = (s) => join(s.portal.root, "aliases.json");
 function normalizeAlias(item) {
   const visibility = item.visibility ?? (item.lan === false ? "public" : "internal");
-  return { ...item, visibility, lan: visibility === "internal" };
+  return { ...item, visibility, lan: visibility === "internal", disabled: item.disabled === true };
 }
 function loadRegistry(s) {
   const file = registryFile(s);
@@ -167,7 +168,8 @@ function gatewayAdapter(config, password) {
 // src/portal/registry.ts
 import { existsSync as existsSync2, mkdirSync, readFileSync as readFileSync2, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-var fqdn = (s, alias) => `${alias}.${s.suffix}`;
+var suffixOf = (s, item) => item.suffix || s.suffix;
+var fqdnOf = (s, item) => `${item.alias}.${suffixOf(s, item)}`;
 function writeRegistry(s, registry) {
   const file = registryFile(s);
   mkdirSync(dirname(file), { recursive: true, mode: 448 });
@@ -196,7 +198,7 @@ function remove(s, alias) {
   writeRegistry(s, updated);
   return { registry: updated, removed };
 }
-var aliasFqdn = fqdn;
+var aliasFqdn = (s, alias) => `${alias}.${s.suffix}`;
 function readAliases(s) {
   return loadRegistry(s).aliases.slice().sort((a, b) => a.alias.localeCompare(b.alias));
 }
@@ -207,7 +209,7 @@ import { existsSync as existsSync3, mkdirSync as mkdirSync2, readdirSync, readFi
 import { join as join2 } from "node:path";
 
 // src/portal/providers.ts
-var fqdn2 = (settings2, alias) => `${alias}.${settings2.suffix}`;
+var fqdn = (settings2, alias) => typeof alias === "string" ? `${alias}.${settings2.suffix}` : `${alias.alias}.${alias.suffix || settings2.suffix}`;
 var isInternal = (alias) => (alias.visibility ?? (alias.lan === false ? "public" : "internal")) === "internal";
 var cloudConfig = (settings2, alias) => {
   const provider = alias.providers?.dns ?? settings2.providers?.dns ?? "local-dnsmasq";
@@ -234,7 +236,7 @@ var CloudDnsProvider = class {
       return {
         provider: this.name,
         kind: this.kind,
-        changes: [{ kind: "noop", resource: fqdn2(settings2, alias.alias), detail: "internal \u522B\u540D\u7981\u6B62\u521B\u5EFA\u516C\u7F51\u8BB0\u5F55" }],
+        changes: [{ kind: "noop", resource: fqdn(settings2, alias), detail: "internal \u522B\u540D\u7981\u6B62\u521B\u5EFA\u516C\u7F51\u8BB0\u5F55" }],
         warnings
       };
     }
@@ -251,7 +253,7 @@ var CloudDnsProvider = class {
       warnings.push(`\u7F3A\u5C11\u51ED\u636E\u73AF\u5883\u53D8\u91CF ${config.credentialsEnv ?? "\uFF08\u672A\u914D\u7F6E\uFF09"}\uFF0C\u4E0D\u6267\u884C\u771F\u5B9E\u5199\u5165`);
       return { provider: this.name, kind: this.kind, changes, warnings, blocked: true };
     }
-    const name = fqdn2(settings2, alias.alias);
+    const name = fqdn(settings2, alias);
     const value = settings2.lanIp ?? "";
     if (!value) {
       warnings.push("\u672A\u914D\u7F6E lanIp\uFF0C\u516C\u7F51 A \u8BB0\u5F55\u503C\u5C06\u4E3A\u7A7A");
@@ -279,7 +281,7 @@ var CloudDnsProvider = class {
     const token = credential(settings2, alias);
     if (!zone || !token) throw new Error(`${this.name}: \u7F3A\u5C11 zone \u6216\u51ED\u636E`);
     const { config } = cloudConfig(settings2, alias);
-    const name = fqdn2(settings2, alias.alias);
+    const name = fqdn(settings2, alias);
     const record = { name, value: settings2.lanIp ?? "", ttl: config?.ttl ?? 120 };
     const change = plan2.changes.find((item) => item.kind !== "noop");
     if (!change) return;
@@ -300,7 +302,7 @@ var CloudDnsProvider = class {
     const token = credential(settings2, alias);
     if (!zone || !token) return { ok: false, detail: "\u7F3A\u5C11 zone \u6216\u51ED\u636E\uFF0C\u65E0\u6CD5\u6821\u9A8C\u516C\u7F51\u8BB0\u5F55" };
     try {
-      const existing = await this.list(zone, fqdn2(settings2, alias.alias), token);
+      const existing = await this.list(zone, fqdn(settings2, alias), token);
       const value = settings2.lanIp ?? "";
       if (!existing) return { ok: false, detail: "\u516C\u7F51\u8BB0\u5F55\u4E0D\u5B58\u5728" };
       return existing.value === value ? { ok: true, detail: `\u516C\u7F51 A ${existing.value} \u5DF2\u5B58\u5728` } : { ok: false, detail: `\u516C\u7F51 A \u4E3A ${existing.value}\uFF0C\u671F\u671B ${value}` };
@@ -443,7 +445,7 @@ var LocalDnsmasqProvider = class {
   name = "local-dnsmasq";
   kind = "dns";
   async plan(alias, settings2) {
-    const name = fqdn2(settings2, alias.alias);
+    const name = fqdn(settings2, alias);
     if (!isInternal(alias)) {
       return { provider: this.name, kind: this.kind, changes: [], warnings: ["public \u522B\u540D\u4E0D\u4F7F\u7528\u5185\u7F51 DNS \u8986\u76D6"] };
     }
@@ -465,7 +467,7 @@ var CaddyConnectivityProvider = class {
   name = "caddy";
   kind = "connectivity";
   async plan(alias, settings2) {
-    const name = fqdn2(settings2, alias.alias);
+    const name = fqdn(settings2, alias);
     const warnings = [];
     if (isInternal(alias) && !settings2.caddy?.bind) warnings.push("internal \u522B\u540D\u7F3A\u5C11 caddy.bind\uFF0C\u516C\u7F51\u5165\u53E3\u4ECD\u53EF\u80FD\u547D\u4E2D");
     if (isInternal(alias) && !settings2.caddy?.allow?.length) warnings.push("internal \u522B\u540D\u7F3A\u5C11 caddy.allow\uFF0C\u6765\u6E90\u4E0D\u53D7\u9650");
@@ -518,7 +520,7 @@ var LanAllowlistProvider = class {
     return {
       provider: this.name,
       kind: this.kind,
-      changes: [{ kind: "noop", resource: fqdn2(settings2, alias.alias), detail: `allow ${settings2.caddy?.allow?.join(" ") ?? ""} deny ${settings2.caddy?.denyStatus ?? 404}` }],
+      changes: [{ kind: "noop", resource: fqdn(settings2, alias), detail: `allow ${settings2.caddy?.allow?.join(" ") ?? ""} deny ${settings2.caddy?.denyStatus ?? 404}` }],
       warnings: []
     };
   }
@@ -626,7 +628,7 @@ var writeLines = (path, lines) => {
 };
 var quote = (value) => /^[A-Za-z0-9_.:/\[\]-]+$/.test(value) ? value : JSON.stringify(value);
 function caddySite(settings2, item) {
-  const name = aliasFqdn(settings2, item.alias);
+  const name = fqdnOf(settings2, item);
   const target = `${item.scheme}://${item.host}:${item.port}`;
   const lines = [`# generated by aio-plugin-portal; alias=${item.alias} visibility=${item.visibility ?? "internal"}`, `${name} {`, "	import defaults"];
   if (isInternal(item)) {
@@ -663,8 +665,11 @@ function renderCaddy(settings2) {
   mkdirSync2(caddy.sitesDir, { recursive: true });
   cleanGenerated(caddy.sitesDir, prefix);
   const files = [];
-  for (const item of readAliases(settings2)) {
+  for (const item of readAliases(settings2).filter((entry) => !entry.disabled)) {
     const path = join2(caddy.sitesDir, `${prefix}${item.alias}.caddy`);
+    if (existsSync3(path) && !readFileSync3(path, "utf8").startsWith("# generated by aio-plugin-portal")) {
+      throw new Error(`\u7AD9\u70B9\u6587\u4EF6 ${path} \u4E0D\u662F\u672C\u5DE5\u5177\u751F\u6210\u7684\uFF0C\u62D2\u7EDD\u8986\u76D6\uFF1B\u8BF7\u6539\u540D\u6216\u624B\u5DE5\u8FC1\u79FB\u8BE5\u7AD9\u70B9`);
+    }
     writeFileSync2(path, caddySite(settings2, item));
     files.push(path);
   }
@@ -672,14 +677,14 @@ function renderCaddy(settings2) {
 }
 function render(settings2) {
   const s = settings2;
-  const aliases = readAliases(s);
+  const aliases = readAliases(s).filter((entry) => !entry.disabled);
   const dir = s.portal.aliasesDir;
   mkdirSync2(dir, { recursive: true });
   const map = [];
   const scheme = [];
   const host = [];
   for (const item of aliases) {
-    const name = aliasFqdn(s, item.alias);
+    const name = fqdnOf(s, item);
     const target = `${item.host}:${item.port}`;
     map.push(`    ${name}  ${target};`);
     scheme.push(`    ${name}  ${item.scheme};`);
@@ -695,8 +700,8 @@ function render(settings2) {
   writeLines(files[2], host);
   const resolver = s.resolver.configFile;
   mkdirSync2(join2(resolver, ".."), { recursive: true });
-  const overrides = s.mode === "none" || !s.lanIp ? [] : aliases.filter((item) => isInternal(item)).map((item) => `address=/${aliasFqdn(s, item.alias)}/${s.lanIp}`);
-  const header = `# \u7531 aio-portal \u751F\u6210\uFF0C\u8BF7\u52FF\u624B\u6539\uFF1B\u6539 ${aliasFqdn(s, "aio-portal")} \u7684\u6CE8\u518C\u8868\u540E\u6267\u884C sync`;
+  const overrides = s.mode === "none" || !s.lanIp ? [] : aliases.filter((item) => isInternal(item)).map((item) => `address=/${fqdnOf(s, item)}/${s.lanIp}`);
+  const header = "# \u7531 aio-portal \u751F\u6210\uFF0C\u8BF7\u52FF\u624B\u6539\uFF1B\u6539\u6CE8\u518C\u8868\u540E\u6267\u884C sync";
   const lines = s.resolver.fragment ? [header, ...overrides] : [
     header,
     `port=${s.resolver.port}`,
@@ -739,7 +744,7 @@ function reloadCaddy(settings2) {
 }
 function reloadResolver(settings2) {
   if (settings2.resolver.provider === "none") return "\u5DF2\u8DF3\u8FC7\u5185\u7F51\u89E3\u6790\u5237\u65B0\uFF08resolver.provider=none\uFF09";
-  const binary = settings2.resolver.dnsmasqBinary ?? "dnsmasq";
+  const binary = settings2.resolver.dnsmasqBinary ?? (existsSync3("/usr/sbin/dnsmasq") ? "/usr/sbin/dnsmasq" : "dnsmasq");
   const test = run(binary, ["--test", `--conf-file=${settings2.resolver.configFile}`]);
   if (test.code !== 0) return `\u89E3\u6790\u914D\u7F6E\u6821\u9A8C\u5931\u8D25\uFF1A${test.out}`;
   if (settings2.resolver.service) {
@@ -793,6 +798,93 @@ function formatReport(report) {
   return lines.join("\n");
 }
 
+// src/portal/teardown.ts
+import { existsSync as existsSync4, readFileSync as readFileSync4, readdirSync as readdirSync2, rmSync as rmSync2, statSync, writeFileSync as writeFileSync3 } from "node:fs";
+import { join as join3 } from "node:path";
+var MARK = "# generated by aio-plugin-portal";
+function captureArtifacts(settings2, alias) {
+  const state = { maps: [] };
+  const sitesDir = settings2.caddy?.sitesDir;
+  if (sitesDir) {
+    const path = join3(sitesDir, `${settings2.caddy?.prefix ?? "portal-"}${alias}.caddy`);
+    if (existsSync4(path)) state.caddySite = { path, text: readFileSync4(path, "utf8") };
+  }
+  const resolver = settings2.resolver.configFile;
+  if (resolver && existsSync4(resolver)) state.resolver = { path: resolver, text: readFileSync4(resolver, "utf8") };
+  const dir = settings2.portal.aliasesDir;
+  if (dir) {
+    for (const name of [`${settings2.portal.mapPrefix}.map`, `${settings2.portal.mapPrefix}.scheme`, `${settings2.portal.mapPrefix}.host`]) {
+      const path = join3(dir, name);
+      if (existsSync4(path)) state.maps.push({ path, text: readFileSync4(path, "utf8") });
+    }
+  }
+  return state;
+}
+function restoreArtifacts(state) {
+  if (state.caddySite) writeFileSync3(state.caddySite.path, state.caddySite.text);
+  if (state.resolver) writeFileSync3(state.resolver.path, state.resolver.text);
+  for (const map of state.maps) writeFileSync3(map.path, map.text);
+}
+function removeCaddySite(settings2, alias) {
+  const sitesDir = settings2.caddy?.sitesDir;
+  if (!sitesDir) return [];
+  const path = join3(sitesDir, `${settings2.caddy?.prefix ?? "portal-"}${alias}.caddy`);
+  if (!existsSync4(path)) return [];
+  const text = readFileSync4(path, "utf8");
+  if (!text.startsWith(MARK)) return [];
+  rmSync2(path);
+  return [path];
+}
+var escapeRe = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function verifyGone(settings2, alias) {
+  const fqdn2 = aliasFqdn(settings2, alias);
+  const pattern = new RegExp(`(^|[^A-Za-z0-9.-])${escapeRe(fqdn2)}([^A-Za-z0-9-]|$)`, "m");
+  const results = [];
+  const sitesDir = settings2.caddy?.sitesDir;
+  if (sitesDir) {
+    const path = join3(sitesDir, `${settings2.caddy?.prefix ?? "portal-"}${alias}.caddy`);
+    const owned = existsSync4(path) && readFileSync4(path, "utf8").startsWith(MARK);
+    results.push({
+      artifact: "caddy-site",
+      ok: !owned,
+      detail: !owned ? existsSync4(path) ? "\u540C\u540D\u6587\u4EF6\u975E\u672C\u5DE5\u5177\u751F\u6210\uFF0C\u5DF2\u4FDD\u7559" : "\u7AD9\u70B9\u6587\u4EF6\u5DF2\u79FB\u9664" : `\u4ECD\u5B58\u5728\u672C\u5DE5\u5177\u4EA7\u7269 ${path}`
+    });
+    const others = existsSync4(sitesDir) ? readResidual(sitesDir, fqdn2) : [];
+    results.push({
+      artifact: "caddy-scan",
+      ok: others.length === 0,
+      detail: others.length ? `\u5176\u4ED6\u7AD9\u70B9\u4ECD\u5F15\u7528 ${fqdn2}: ${others.join(", ")}` : "\u7AD9\u70B9\u76EE\u5F55\u65E0\u6B8B\u7559\u5F15\u7528"
+    });
+  }
+  const resolver = settings2.resolver.configFile;
+  if (resolver) {
+    const text = existsSync4(resolver) ? readFileSync4(resolver, "utf8") : "";
+    results.push({ artifact: "resolver", ok: !pattern.test(text), detail: pattern.test(text) ? `\u89E3\u6790\u7247\u6BB5\u4ECD\u542B ${fqdn2}` : "\u89E3\u6790\u7247\u6BB5\u5DF2\u6E05\u9664" });
+  }
+  const dir = settings2.portal.aliasesDir;
+  if (dir) {
+    for (const name of [`${settings2.portal.mapPrefix}.map`, `${settings2.portal.mapPrefix}.scheme`, `${settings2.portal.mapPrefix}.host`]) {
+      const path = join3(dir, name);
+      const text = existsSync4(path) ? readFileSync4(path, "utf8") : "";
+      results.push({ artifact: `map:${name}`, ok: !pattern.test(text), detail: pattern.test(text) ? `${name} \u4ECD\u542B ${fqdn2}` : `${name} \u5DF2\u6E05\u9664` });
+    }
+  }
+  return results;
+}
+function readResidual(dir, fqdn2) {
+  const hits = [];
+  for (const name of readdirSync2(dir)) {
+    if (!name.endsWith(".caddy")) continue;
+    const path = join3(dir, name);
+    if (!statSync(path).isFile()) continue;
+    const text = readFileSync4(path, "utf8");
+    if (!text.startsWith(MARK)) continue;
+    const header = text.split("\n", 2)[1] ?? "";
+    if (new RegExp(`alias=${escapeRe(fqdn2.split(".")[0])}(\\s|$)`).test(header)) hits.push(name);
+  }
+  return hits;
+}
+
 // src/portal/commands.ts
 var isAlias = (value) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(value);
 var isHost = (value) => /^[A-Za-z0-9_.:-]+$/.test(value);
@@ -802,6 +894,69 @@ var parsePort = (value) => {
   return port;
 };
 var settings = (home) => loadSettings(home);
+function snapshotAll(s) {
+  const sites = /* @__PURE__ */ new Map();
+  const sitesDir = s.caddy?.sitesDir;
+  if (sitesDir) {
+    for (const name of existsSync5(sitesDir) ? readdirSync3(sitesDir) : []) {
+      if (!name.startsWith(s.caddy?.prefix ?? "portal-") || !name.endsWith(".caddy")) continue;
+      const path = join4(sitesDir, name);
+      sites.set(path, readFileSync5(path, "utf8"));
+    }
+  }
+  const maps = /* @__PURE__ */ new Map();
+  const dir = s.portal.aliasesDir;
+  if (dir) {
+    for (const name of [`${s.portal.mapPrefix}.map`, `${s.portal.mapPrefix}.scheme`, `${s.portal.mapPrefix}.host`]) {
+      const path = join4(dir, name);
+      if (existsSync5(path)) maps.set(path, readFileSync5(path, "utf8"));
+    }
+  }
+  const resolver = s.resolver.configFile;
+  return {
+    registry: snapshot(s),
+    sites,
+    maps,
+    resolver: resolver && existsSync5(resolver) ? readFileSync5(resolver, "utf8") : null
+  };
+}
+function restoreAll(s, snap) {
+  const regFile = join4(s.portal.root, "aliases.json");
+  if (snap.registry === null) {
+    if (existsSync5(regFile)) rmSync3(regFile);
+  } else {
+    writeFileSync4(regFile, snap.registry, { mode: 384 });
+  }
+  const sitesDir = s.caddy?.sitesDir;
+  if (sitesDir && existsSync5(sitesDir)) {
+    for (const name of readdirSync3(sitesDir)) {
+      const path = join4(sitesDir, name);
+      if (snap.sites.has(path)) continue;
+      if (name.startsWith(s.caddy?.prefix ?? "portal-") && name.endsWith(".caddy")) rmSync3(path);
+    }
+  }
+  for (const [path, text] of snap.sites) if (text !== null) writeFileSync4(path, text);
+  for (const [path, text] of snap.maps) if (text !== null) writeFileSync4(path, text);
+  const resolver = s.resolver.configFile;
+  if (resolver) {
+    if (snap.resolver === null) {
+      if (existsSync5(resolver)) rmSync3(resolver);
+    } else {
+      writeFileSync4(resolver, snap.resolver);
+    }
+  }
+}
+function finish(s, snap, message) {
+  try {
+    const rendered = render(s);
+    const reload = renderReload(s);
+    if (/校验失败/.test(reload)) throw new Error(reload);
+    return [message(rendered.aliases), reload].join("\n");
+  } catch (error) {
+    restoreAll(s, snap);
+    throw new Error(`\u672C\u6B21\u53D8\u66F4\u672A\u751F\u6548\uFF0C\u5DF2\u56DE\u6EDA\uFF1A${error instanceof Error ? error.message : String(error)}`);
+  }
+}
 function add(options) {
   const s = settings(options.home);
   if (!isAlias(options.alias)) throw new Error("\u522B\u540D\u53EA\u80FD\u4F7F\u7528\u5C0F\u5199\u5B57\u6BCD\u3001\u6570\u5B57\u548C\u8FDE\u5B57\u7B26");
@@ -816,27 +971,47 @@ function add(options) {
     visibility: options.visibility,
     lan: options.visibility === "internal" && s.mode !== "none",
     authorizedBy: options.authorizedBy,
-    note: options.note ?? ""
+    note: options.note ?? "",
+    ...options.suffix ? { suffix: options.suffix } : {}
   };
-  const registry = upsert(s, entry);
-  const result = render(s);
-  return [
-    `\u5DF2\u767B\u8BB0 ${aliasFqdn(s, entry.alias)} -> ${entry.scheme}://${entry.host}:${entry.port}\uFF08${entry.visibility}\uFF0C\u5171 ${result.aliases} \u6761\uFF09`,
-    renderReload(s)
-  ].join("\n");
+  if (entry.suffix && !/^[a-z0-9.-]+$/.test(entry.suffix)) throw new Error(`\u57DF\u540D\u540E\u7F00\u4E0D\u5408\u6CD5\uFF1A${entry.suffix}`);
+  const snap = snapshotAll(s);
+  upsert(s, entry);
+  return finish(s, snap, (total) => `\u5DF2\u767B\u8BB0 ${fqdnOf(s, entry)} -> ${entry.scheme}://${entry.host}:${entry.port}\uFF08${entry.visibility}\uFF0C\u5171 ${total} \u6761\uFF09`);
 }
 function removeAlias(options) {
   const s = settings(options.home);
+  const target = readAliases(s).find((item) => item.alias === options.alias);
+  if (!target) throw new Error(`\u672A\u627E\u5230\u522B\u540D\uFF1A${options.alias}`);
+  const fqdn2 = fqdnOf(s, target);
+  const before = captureArtifacts(s, options.alias);
+  const registryBefore = snapshot(s);
   const result = remove(s, options.alias);
-  if (!result.removed) throw new Error(`\u672A\u627E\u5230\u522B\u540D\uFF1A${options.alias}`);
-  const rendered = render(s);
-  return [`\u5DF2\u5220\u9664 ${aliasFqdn(s, options.alias)}\uFF08\u5269\u4F59 ${rendered.aliases} \u6761\uFF09`, renderReload(s)].join("\n");
+  const removedFiles = removeCaddySite(s, options.alias);
+  try {
+    const rendered = render(s);
+    const verified = verifyGone(s, options.alias);
+    const failed = verified.filter((item) => !item.ok);
+    if (failed.length) {
+      throw new Error(`\u5220\u9664\u540E\u4ECD\u5B58\u5728\u6B8B\u7559\uFF1A${failed.map((item) => item.detail).join("\uFF1B")}`);
+    }
+    return [
+      `\u5DF2\u5220\u9664 ${fqdn2}\uFF08\u5269\u4F59 ${rendered.aliases} \u6761\uFF09`,
+      `\u5DF2\u6E05\u7406\uFF1A\u6CE8\u518C\u8868 1 \u6761\u3001\u7AD9\u70B9\u6587\u4EF6 ${removedFiles.length} \u4E2A\u3001\u89E3\u6790\u4E0E\u6620\u5C04\u4EA7\u7269\u5DF2\u91CD\u5199`,
+      ...verified.map((item) => `  \u6821\u9A8C ${item.artifact}: ${item.detail}`),
+      renderReload(s)
+    ].join("\n");
+  } catch (error) {
+    restoreArtifacts(before);
+    if (registryBefore !== null) writeFileSync4(join4(s.portal.root, "aliases.json"), registryBefore, { mode: 384 });
+    throw new Error(`\u5220\u9664 ${fqdn2} \u5931\u8D25\uFF0C\u5DF2\u56DE\u6EDA\u5230\u5220\u9664\u524D\u72B6\u6001\uFF1A${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 function list(options) {
   const s = settings(options.home);
   const aliases = readAliases(s);
   if (!aliases.length) return "\uFF08\u7A7A\uFF09";
-  return aliases.map((item) => `  ${aliasFqdn(s, item.alias).padEnd(30)} -> ${item.scheme}://${item.host}:${item.port}  ${item.visibility ?? "internal"}  ${item.note ?? ""}`).join("\n");
+  return aliases.map((item) => `  ${fqdnOf(s, item).padEnd(30)} -> ${item.scheme}://${item.host}:${item.port}  ${item.visibility ?? "internal"}${item.disabled ? " [\u5DF2\u505C\u7528]" : ""}  ${item.note ?? ""}`).join("\n");
 }
 async function sync(options) {
   const s = settings(options.home);
@@ -868,8 +1043,8 @@ function renderReload(s) {
 }
 function doctor(options) {
   const s = settings(options.home);
-  const resolved = existsSync4(s.resolver.configFile);
-  const rendered = existsSync4(`${s.portal.aliasesDir}/${s.portal.mapPrefix}.map`);
+  const resolved = existsSync5(s.resolver.configFile);
+  const rendered = existsSync5(`${s.portal.aliasesDir}/${s.portal.mapPrefix}.map`);
   const lines = [
     `  \u57DF\u540D\u540E\u7F00        ${s.suffix}`,
     `  \u89E3\u6790\u6A21\u5F0F        ${s.mode}`,
@@ -914,16 +1089,95 @@ async function warden(options) {
   await adapter.apply({ dns1: s.lanIp, dns2: s.gateway.fallbackDns ?? "223.5.5.5" });
   return [head, `\u5DF2\u628A\u7F51\u5173\u4E0A\u6E38 DNS \u8BBE\u4E3A ${s.lanIp}\uFF08\u515C\u5E95 ${s.gateway.fallbackDns}\uFF09\u3002\u5C40\u57DF\u7F51\u8BBE\u5907\u65E0\u9700\u4EFB\u4F55\u8BBE\u7F6E\u5373\u81EA\u52A8\u8D70\u5185\u7F51\u3002`].join("\n");
 }
+var rowOf = (s, item) => {
+  const sitesDir = s.caddy?.sitesDir;
+  const site = sitesDir ? join4(sitesDir, `${s.caddy?.prefix ?? "portal-"}${item.alias}.caddy`) : "";
+  const resolver = s.resolver.configFile;
+  const dnsOk = resolver && existsSync5(resolver) ? new RegExp(`^address=/${fqdnOf(s, item).replace(/\./g, "\\.")}/`, "m").test(readFileSync5(resolver, "utf8")) : false;
+  return {
+    alias: item.alias,
+    fqdn: fqdnOf(s, item),
+    scheme: item.scheme,
+    host: item.host,
+    port: item.port,
+    visibility: item.visibility ?? "internal",
+    disabled: item.disabled === true,
+    note: item.note ?? "",
+    authorizedBy: item.authorizedBy,
+    rendered: (item.disabled ? true : Boolean(site && existsSync5(site))) && (item.disabled || item.visibility === "public" ? true : dnsOk)
+  };
+};
+function query(options = {}) {
+  const s = settings(options.home);
+  const term = (options.search ?? "").trim().toLowerCase();
+  let items = readAliases(s).map((item) => rowOf(s, item));
+  if (term) {
+    items = items.filter((row) => [row.alias, row.fqdn, row.host, row.note].some((value) => value.toLowerCase().includes(term)));
+  }
+  if (options.visibility) items = items.filter((row) => row.visibility === options.visibility);
+  if (options.disabled !== void 0) items = items.filter((row) => row.disabled === options.disabled);
+  const key = options.sort ?? "alias";
+  const direction = options.order === "desc" ? -1 : 1;
+  items.sort((a, b) => {
+    const left = key === "port" ? a.port : String(a[key]);
+    const right = key === "port" ? b.port : String(b[key]);
+    return left < right ? -direction : left > right ? direction : 0;
+  });
+  const pageSize = Math.max(1, options.pageSize ?? 50);
+  const pages = Math.max(1, Math.ceil(items.length / pageSize));
+  const page = Math.min(Math.max(1, options.page ?? 1), pages);
+  return { items: items.slice((page - 1) * pageSize, page * pageSize), total: items.length, page, pageSize, pages };
+}
+function update(options) {
+  const s = settings(options.home);
+  const existing = readAliases(s).find((item) => item.alias === options.alias);
+  if (!existing) throw new Error(`\u672A\u627E\u5230\u522B\u540D\uFF1A${options.alias}`);
+  const visibility = options.visibility ?? existing.visibility ?? "internal";
+  if (visibility !== "internal" && visibility !== "public") throw new Error("visibility \u53EA\u80FD\u662F internal \u6216 public");
+  if (options.scheme && options.scheme !== "http" && options.scheme !== "https") throw new Error("\u534F\u8BAE\u53EA\u80FD\u662F http \u6216 https");
+  const host = options.host ?? existing.host;
+  if (!isHost(host)) throw new Error("\u76EE\u6807\u4E3B\u673A\u4E0D\u5408\u6CD5");
+  const next = {
+    ...existing,
+    host,
+    port: options.port === void 0 ? existing.port : parsePort(options.port),
+    scheme: options.scheme ?? existing.scheme,
+    note: options.note ?? existing.note ?? "",
+    visibility,
+    lan: visibility === "internal",
+    authorizedBy: options.authorizedBy ?? existing.authorizedBy
+  };
+  if (options.suffix !== void 0) {
+    if (options.suffix && !/^[a-z0-9.-]+$/.test(options.suffix)) throw new Error(`\u57DF\u540D\u540E\u7F00\u4E0D\u5408\u6CD5\uFF1A${options.suffix}`);
+    if (options.suffix) next.suffix = options.suffix;
+    else delete next.suffix;
+  }
+  if (visibility === "public" && !next.authorizedBy) throw new Error("public \u522B\u540D\u5FC5\u987B\u4FDD\u7559\u6216\u91CD\u65B0\u63D0\u4F9B\u6388\u6743\u4EBA\uFF08authorizedBy\uFF09");
+  const snap = snapshotAll(s);
+  upsert(s, next);
+  return finish(s, snap, (total) => `\u5DF2\u66F4\u65B0 ${fqdnOf(s, next)} -> ${next.scheme}://${next.host}:${next.port}\uFF08${next.visibility}\uFF0C\u5171 ${total} \u6761\uFF09`);
+}
+function setEnabled(options) {
+  const s = settings(options.home);
+  const existing = readAliases(s).find((item) => item.alias === options.alias);
+  if (!existing) throw new Error(`\u672A\u627E\u5230\u522B\u540D\uFF1A${options.alias}`);
+  const snap = snapshotAll(s);
+  upsert(s, { ...existing, disabled: !options.enabled });
+  return finish(s, snap, (total) => `${options.enabled ? "\u5DF2\u542F\u7528" : "\u5DF2\u505C\u7528"} ${fqdnOf(s, existing)}\uFF08\u53C2\u4E0E\u6E32\u67D3 ${total} \u6761\uFF09`);
+}
 
 // src/cli.ts
 var USAGE = `aio-plugin-portal <\u547D\u4EE4> [\u9009\u9879]
 
 \u547D\u4EE4:
-  add <\u522B\u540D> --port <\u7AEF\u53E3> [--host <\u4E3B\u673A>] [--scheme http|https] [--note <\u5907\u6CE8>]
+  add <\u522B\u540D> --port <\u7AEF\u53E3> [--host <\u4E3B\u673A>] [--scheme http|https] [--note <\u5907\u6CE8>] [--suffix <\u57DF>]
   add <\u522B\u540D> --port <\u7AEF\u53E3> --visibility public --authorized-by <\u6388\u6743\u4EBA>
   \uFF08public \u5FC5\u987B\u663E\u5F0F\u6388\u6743\uFF1B\u65E7 --no-lan \u53EA\u8868\u793A\u4E0D\u505A\u5185\u7F51 DNS\uFF0C\u4E0D\u518D\u81EA\u52A8\u7B97\u6388\u6743\uFF09
-  remove <\u522B\u540D>
-  list
+  update <\u522B\u540D> [--host|--port|--scheme|--note|--visibility|--authorized-by|--suffix]
+  enable <\u522B\u540D> / disable <\u522B\u540D>     \u505C\u7528\u4E0D\u5220\u6570\u636E\uFF0C\u6062\u590D\u7528 enable
+  remove <\u522B\u540D>                      \u8FDE\u5E26\u6E05\u7406\u7AD9\u70B9\u6587\u4EF6\u3001\u89E3\u6790\u4E0E\u6620\u5C04\u4EA7\u7269\u5E76\u53CD\u5411\u6821\u9A8C
+  list [--search <\u8BCD>] [--visibility internal|public] [--sort alias|visibility|host|port]
+       [--order asc|desc] [--page <n>] [--page-size <n>] [--json]
   plan
   sync [--apply]
   doctor
@@ -950,12 +1204,19 @@ async function main() {
       home: { type: "string" },
       password: { type: "string" },
       apply: { type: "boolean", default: false },
-      restore: { type: "boolean", default: false }
+      restore: { type: "boolean", default: false },
+      suffix: { type: "string" },
+      search: { type: "string" },
+      sort: { type: "string" },
+      order: { type: "string" },
+      page: { type: "string" },
+      "page-size": { type: "string" },
+      json: { type: "boolean", default: false }
     }
   });
   const [command, argument] = positionals;
   if (values.version) {
-    console.log("0.2.0");
+    console.log("0.3.0");
     return;
   }
   if (values.help || !command) {
@@ -969,7 +1230,28 @@ async function main() {
       const visibility = values.visibility ?? (values["no-lan"] || !values.lan ? "public" : "internal");
       if (visibility !== "internal" && visibility !== "public") throw new Error("--visibility \u53EA\u80FD\u662F internal \u6216 public");
       const authorizedBy = values["authorized-by"];
-      console.log(add({ alias: argument, host: values.host, port: values.port, scheme: values.scheme, note: values.note, visibility, authorizedBy, home: values.home }));
+      console.log(add({ alias: argument, host: values.host, port: values.port, scheme: values.scheme, note: values.note, visibility, authorizedBy, suffix: values.suffix, home: values.home }));
+      return;
+    }
+    case "update": {
+      if (!argument) throw new Error("update \u9700\u8981\u522B\u540D");
+      console.log(update({
+        alias: argument,
+        host: values.host === "127.0.0.1" && !process.argv.includes("--host") ? void 0 : values.host,
+        port: values.port,
+        scheme: process.argv.includes("--scheme") ? values.scheme : void 0,
+        note: values.note,
+        visibility: values.visibility,
+        authorizedBy: values["authorized-by"],
+        suffix: values.suffix,
+        home: values.home
+      }));
+      return;
+    }
+    case "enable":
+    case "disable": {
+      if (!argument) throw new Error(`${command} \u9700\u8981\u522B\u540D`);
+      console.log(setEnabled({ alias: argument, enabled: command === "enable", home: values.home }));
       return;
     }
     case "remove": {
@@ -977,9 +1259,31 @@ async function main() {
       console.log(removeAlias({ alias: argument, home: values.home }));
       return;
     }
-    case "list":
-      console.log(list({ home: values.home }));
+    case "list": {
+      if (!values.search && !values.visibility && !values.sort && !values.order && !values.page && !values["page-size"] && !values.json) {
+        console.log(list({ home: values.home }));
+        return;
+      }
+      const result = query({
+        home: values.home,
+        search: values.search,
+        visibility: values.visibility,
+        sort: values.sort,
+        order: values.order,
+        page: values.page ? Number(values.page) : void 0,
+        pageSize: values["page-size"] ? Number(values["page-size"]) : void 0
+      });
+      if (values.json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      const width = Math.max(12, ...result.items.map((row) => row.fqdn.length));
+      console.log(`\u5171 ${result.total} \u6761\uFF0C\u7B2C ${result.page}/${result.pages} \u9875`);
+      for (const row of result.items) {
+        console.log(`  ${row.fqdn.padEnd(width)}  ${(row.scheme + "://" + row.host + ":" + row.port).padEnd(26)}  ${row.visibility.padEnd(9)}${row.disabled ? "[\u505C\u7528] " : ""}${row.rendered ? "" : "[\u4EA7\u7269\u7F3A\u5931] "}${row.note}`);
+      }
       return;
+    }
     case "plan":
       console.log(await plan({ home: values.home }));
       return;

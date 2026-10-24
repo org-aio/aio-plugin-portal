@@ -107,6 +107,13 @@ export type Alias = {
   providers?: Partial<Omit<ProvidersConfig, 'cloud'>>;
   /** 公网写入的人工授权标识（必填才允许 public）。 */
   authorizedBy?: string;
+  /**
+   * 单条覆盖域名后缀。用于同一套门户里同时登记多个域（例如内网统一 lyokm.cn，
+   * 而 aio/sub2api 仍在 addzero.site）。缺省时用 settings.suffix。
+   */
+  suffix?: string;
+  /** 停用后不生成任何产物，但仍保留登记便于恢复。 */
+  disabled?: boolean;
 };
 
 export type Registry = {aliases: Alias[]};
@@ -157,7 +164,7 @@ export const registryFile = (s: PortalSettings) => join(s.portal.root, 'aliases.
 /** 对旧数据做归一：`visibility` 缺省时按 `lan` 推导，缺省视作 internal。 */
 export function normalizeAlias(item: Alias): Alias {
   const visibility = item.visibility ?? (item.lan === false ? 'public' : 'internal');
-  return {...item, visibility, lan: visibility === 'internal'};
+  return {...item, visibility, lan: visibility === 'internal', disabled: item.disabled === true};
 }
 
 export function loadRegistry(s: PortalSettings): Registry {

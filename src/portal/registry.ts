@@ -4,7 +4,15 @@ import {dirname} from 'node:path';
 import type {Alias, PortalSettings, Registry} from '../config/index.js';
 import {loadRegistry, registryFile} from '../config/index.js';
 
-const fqdn = (s: PortalSettings, alias: string) => `${alias}.${s.suffix}`;
+/**
+ * 一条记录的完整域名 = `<alias>.<suffix>`；`suffix` 缺省回落到全局 settings.suffix。
+ * 同一门户可以同时登记多个域（内网统一 lyokm.cn，aio/sub2api 仍在 addzero.site），
+ * 因此所有拼接 fqdn 的地方都必须走这里，不能直接用 settings.suffix。
+ */
+export const suffixOf = (s: PortalSettings, item: Pick<Alias, 'suffix'>): string => item.suffix || s.suffix;
+
+export const fqdnOf = (s: PortalSettings, item: Pick<Alias, 'alias' | 'suffix'>): string =>
+  `${item.alias}.${suffixOf(s, item)}`;
 
 export function writeRegistry(s: PortalSettings, registry: Registry): void {
   const file = registryFile(s);
@@ -38,7 +46,8 @@ export function remove(s: PortalSettings, alias: string): {registry: Registry; r
   return {registry: updated, removed};
 }
 
-export const aliasFqdn = fqdn;
+/** 兼容旧调用点：按全局后缀拼 fqdn（不带 suffix 覆盖的场合）。 */
+export const aliasFqdn = (s: PortalSettings, alias: string): string => `${alias}.${s.suffix}`;
 
 export function readAliases(s: PortalSettings): Alias[] {
   return loadRegistry(s).aliases.slice().sort((a, b) => a.alias.localeCompare(b.alias));

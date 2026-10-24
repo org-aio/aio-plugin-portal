@@ -33,7 +33,8 @@ export interface Provider {
   verify(alias: Alias, settings: PortalSettings): Promise<VerifyResult>;
 }
 
-export const fqdn = (settings: PortalSettings, alias: string): string => `${alias}.${settings.suffix}`;
+export const fqdn = (settings: PortalSettings, alias: string | Pick<Alias, 'alias' | 'suffix'>): string =>
+  typeof alias === 'string' ? `${alias}.${settings.suffix}` : `${alias.alias}.${alias.suffix || settings.suffix}`;
 
 /** 与注册表归一规则保持一致：只有显式 public 才允许公网写入。 */
 const isInternal = (alias: Alias): boolean =>
@@ -82,7 +83,7 @@ abstract class CloudDnsProvider implements Provider {
       return {
         provider: this.name,
         kind: this.kind,
-        changes: [{kind: 'noop', resource: fqdn(settings, alias.alias), detail: 'internal 别名禁止创建公网记录'}],
+        changes: [{kind: 'noop', resource: fqdn(settings, alias), detail: 'internal 别名禁止创建公网记录'}],
         warnings,
       };
     }
@@ -99,7 +100,7 @@ abstract class CloudDnsProvider implements Provider {
       warnings.push(`缺少凭据环境变量 ${config.credentialsEnv ?? '（未配置）'}，不执行真实写入`);
       return {provider: this.name, kind: this.kind, changes, warnings, blocked: true};
     }
-    const name = fqdn(settings, alias.alias);
+    const name = fqdn(settings, alias);
     const value = settings.lanIp ?? '';
     if (!value) {
       warnings.push('未配置 lanIp，公网 A 记录值将为空');
@@ -128,7 +129,7 @@ abstract class CloudDnsProvider implements Provider {
     const token = credential(settings, alias);
     if (!zone || !token) throw new Error(`${this.name}: 缺少 zone 或凭据`);
     const {config} = cloudConfig(settings, alias);
-    const name = fqdn(settings, alias.alias);
+    const name = fqdn(settings, alias);
     const record = {name, value: settings.lanIp ?? '', ttl: config?.ttl ?? 120};
     const change = plan.changes.find(item => item.kind !== 'noop');
     if (!change) return;
@@ -150,7 +151,7 @@ abstract class CloudDnsProvider implements Provider {
     const token = credential(settings, alias);
     if (!zone || !token) return {ok: false, detail: '缺少 zone 或凭据，无法校验公网记录'};
     try {
-      const existing = await this.list(zone, fqdn(settings, alias.alias), token);
+      const existing = await this.list(zone, fqdn(settings, alias), token);
       const value = settings.lanIp ?? '';
       if (!existing) return {ok: false, detail: '公网记录不存在'};
       return existing.value === value
@@ -301,7 +302,7 @@ export class LocalDnsmasqProvider implements Provider {
   readonly name = 'local-dnsmasq';
   readonly kind = 'dns' as const;
   async plan(alias: Alias, settings: PortalSettings): Promise<Plan> {
-    const name = fqdn(settings, alias.alias);
+    const name = fqdn(settings, alias);
     if (!isInternal(alias)) {
       return {provider: this.name, kind: this.kind, changes: [], warnings: ['public 别名不使用内网 DNS 覆盖']};
     }
@@ -324,7 +325,7 @@ export class CaddyConnectivityProvider implements Provider {
   readonly name = 'caddy';
   readonly kind = 'connectivity' as const;
   async plan(alias: Alias, settings: PortalSettings): Promise<Plan> {
-    const name = fqdn(settings, alias.alias);
+    const name = fqdn(settings, alias);
     const warnings: string[] = [];
     if (isInternal(alias) && !settings.caddy?.bind) warnings.push('internal 别名缺少 caddy.bind，公网入口仍可能命中');
     if (isInternal(alias) && !(settings.caddy?.allow?.length)) warnings.push('internal 别名缺少 caddy.allow，来源不受限');
@@ -373,7 +374,7 @@ export class LanAllowlistProvider implements Provider {
     return {
       provider: this.name,
       kind: this.kind,
-      changes: [{kind: 'noop', resource: fqdn(settings, alias.alias), detail: `allow ${settings.caddy?.allow?.join(' ') ?? ''} deny ${settings.caddy?.denyStatus ?? 404}`}],
+      changes: [{kind: 'noop', resource: fqdn(settings, alias), detail: `allow ${settings.caddy?.allow?.join(' ') ?? ''} deny ${settings.caddy?.denyStatus ?? 404}`}],
       warnings: [],
     };
   }
