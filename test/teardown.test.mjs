@@ -157,7 +157,8 @@ test('stream 打开时渲染 flush_interval -1，关闭后不再出现', () => {
   assert.match(readFileSync(site, 'utf8'), /flush_interval -1/);
 });
 
-test('解析片段写成 0644：非 root 的 dnsmasq 才能加载', () => {
+// POSIX 权限位只在类 Unix 上有意义；Windows 的文件模式固定为 666，这里不适用。
+test('解析片段写成 0644：非 root 的 dnsmasq 才能加载', {skip: process.platform === 'win32' && 'Windows 无 POSIX 权限位'}, () => {
   const dir = home();
   cli({AIO_PORTAL_HOME: dir}, 'add', 'svc', '--port', '8010');
   const mode = statSync(join(dir, 'dns', 'aio-portal.conf')).mode & 0o777;
