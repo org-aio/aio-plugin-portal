@@ -76,3 +76,12 @@ aio-plugin-portal warden --password '<网关密码>' --restore      # 回滚网�
 - 网关改动默认只读，写入必须显式 `--apply`，并支持 `--restore` 回滚；会同时影响经该网关上网的所有设备。
 - 只想让个别机器走内网时，不动网关，改用客户端按域名分流（例如 macOS `/etc/resolver/<suffix>`）。
 - 通过 AIO 市场安装后，本文件随 npm 包进入 `~/.agents/skills/aio-plugin-portal/SKILL.md`。
+
+## 现网协作边界（182，2026-10-24 实测）
+
+- 站点目录与解析片段会被 `localmesh/scripts/render.sh` 一起管；该脚本已按 `portal-*.caddy` 的实际域名跳过重复渲染，
+  **不要手工再写同名 `<别名>.caddy`**，否则 Caddy reload 会因重复域名失败。
+- 所有 fqdn 拼接必须走 `fqdnOf`（记录级 `suffix` 优先）；删除校验 `verifyGone` 也必须带 `suffix`，
+  否则校验的是另一条域名，残留会被误判为已删除（已有回归测试覆盖）。
+- 解析片段 0644、`reload` 后仍需 restart 才加载新片段、禁止整域 `server=/<域>/` 转发，这三条都已写进 README。
+- 需要流式（SSE/大屏/长连接）的记录要 `--stream`，否则被缓冲。
