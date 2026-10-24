@@ -20,6 +20,12 @@ const writeLines = (path: string, lines: string[]): void => {
 
 const quote = (value: string): string => (/^[A-Za-z0-9_.:/\[\]-]+$/.test(value) ? value : JSON.stringify(value));
 
+/** 反代指令：`stream` 打开时关闭响应缓冲，保证 SSE / 长轮询 / 大屏推送逐条下发。 */
+const reverseProxy = (target: string, item: Alias): string[] =>
+  item.stream
+    ? [`\t\treverse_proxy ${quote(target)} {`, '\t\t\tflush_interval -1', '\t\t}']
+    : [`\t\treverse_proxy ${quote(target)}`];
+
 /** 生成单个 Caddy 站点；internal 站点必须使用默认私有 CA。 */
 export function caddySite(settings: PortalSettings, item: Alias): string {
   const name = fqdnOf(settings, item);
@@ -30,10 +36,10 @@ export function caddySite(settings: PortalSettings, item: Alias): string {
     if (bind) lines.push(`\tbind ${quote(bind)}`);
     const allow = settings.caddy?.allow?.length ? settings.caddy.allow : ['127.0.0.1/32'];
     lines.push(`\t@internal remote_ip ${allow.join(' ')}`);
-    lines.push('\thandle @internal {', '\t\tencode gzip', `\t\treverse_proxy ${quote(target)}`, '\t}');
+    lines.push('\thandle @internal {', '\t\tencode gzip', ...reverseProxy(target, item), '\t}');
     lines.push('\thandle {', `\t\trespond ${settings.caddy?.denyStatus ?? 404}`, '\t}');
   } else {
-    lines.push('\tencode gzip', `\treverse_proxy ${quote(target)}`);
+    lines.push('\tencode gzip', ...reverseProxy(target, item));
   }
   lines.push('}', '');
   return lines.join('\n');

@@ -114,6 +114,11 @@ export type Alias = {
   suffix?: string;
   /** 停用后不生成任何产物，但仍保留登记便于恢复。 */
   disabled?: boolean;
+  /**
+   * 上游是流式/长连接时打开：Caddy 侧渲染成 `flush_interval -1`。
+   * 关闭会缓冲响应，SSE、WebSocket 升级和大屏推送都会卡住或攒批。
+   */
+  stream?: boolean;
 };
 
 export type Registry = {aliases: Alias[]};

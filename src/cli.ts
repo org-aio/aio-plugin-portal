@@ -7,10 +7,10 @@ declare const PACKAGE_VERSION: string;
 const USAGE = `aio-plugin-portal <命令> [选项]
 
 命令:
-  add <别名> --port <端口> [--host <主机>] [--scheme http|https] [--note <备注>] [--suffix <域>]
+  add <别名> --port <端口> [--host <主机>] [--scheme http|https] [--note <备注>] [--suffix <域>] [--stream]
   add <别名> --port <端口> --visibility public --authorized-by <授权人>
   （public 必须显式授权；旧 --no-lan 只表示不做内网 DNS，不再自动算授权）
-  update <别名> [--host|--port|--scheme|--note|--visibility|--authorized-by|--suffix]
+  update <别名> [--host|--port|--scheme|--note|--visibility|--authorized-by|--suffix] [--stream|--no-stream]
   enable <别名> / disable <别名>     停用不删数据，恢复用 enable
   remove <别名>                      连带清理站点文件、解析与映射产物并反向校验
   list [--search <词>] [--visibility internal|public] [--sort alias|visibility|host|port]
@@ -44,6 +44,8 @@ async function main(): Promise<void> {
       apply: {type: 'boolean', default: false},
       restore: {type: 'boolean', default: false},
       suffix: {type: 'string'},
+      stream: {type: 'boolean'},
+      'no-stream': {type: 'boolean'},
       search: {type: 'string'},
       sort: {type: 'string'},
       order: {type: 'string'},
@@ -68,14 +70,15 @@ async function main(): Promise<void> {
       const visibility = values.visibility ?? (values['no-lan'] || !values.lan ? 'public' : 'internal');
       if (visibility !== 'internal' && visibility !== 'public') throw new Error('--visibility 只能是 internal 或 public');
       const authorizedBy = values['authorized-by'];
-      console.log(add({alias: argument, host: values.host, port: values.port, scheme: values.scheme, note: values.note, visibility, authorizedBy, suffix: values.suffix, home: values.home}));
+      console.log(add({alias: argument, host: values.host, port: values.port, scheme: values.scheme, note: values.note, visibility, authorizedBy, suffix: values.suffix, stream: values.stream ? true : undefined, home: values.home}));
       return;
     }
     case 'update': {
       if (!argument) throw new Error('update 需要别名');
       console.log(update({alias: argument, host: values.host === '127.0.0.1' && !process.argv.includes('--host') ? undefined : values.host,
         port: values.port, scheme: process.argv.includes('--scheme') ? values.scheme : undefined,
-        note: values.note, visibility: values.visibility, authorizedBy: values['authorized-by'], suffix: values.suffix, home: values.home}));
+        note: values.note, visibility: values.visibility, authorizedBy: values['authorized-by'], suffix: values.suffix,
+        stream: values['no-stream'] ? false : values.stream ? true : undefined, home: values.home}));
       return;
     }
     case 'enable':

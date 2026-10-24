@@ -100,7 +100,7 @@ function finish(s: PortalSettings, snap: PortalSnapshot, message: string): strin
   }
 }
 
-export function add(options: {alias: string; host: string; port: string; scheme: string; note?: string; visibility: 'internal' | 'public'; authorizedBy?: string; suffix?: string; home?: string}): string {
+export function add(options: {alias: string; host: string; port: string; scheme: string; note?: string; visibility: 'internal' | 'public'; authorizedBy?: string; suffix?: string; stream?: boolean; home?: string}): string {
   const s = settings(options.home);
   if (!isAlias(options.alias)) throw new Error('别名只能使用小写字母、数字和连字符');
   if (!isHost(options.host)) throw new Error('目标主机不合法');
@@ -116,6 +116,7 @@ export function add(options: {alias: string; host: string; port: string; scheme:
     authorizedBy: options.authorizedBy,
     note: options.note ?? '',
     ...(options.suffix ? {suffix: options.suffix} : {}),
+    ...(options.stream ? {stream: true} : {}),
   };
   if (entry.suffix && !/^[a-z0-9.-]+$/.test(entry.suffix)) throw new Error(`域名后缀不合法：${entry.suffix}`);
   const snap = snapshotAll(s);
@@ -336,6 +337,8 @@ export function update(options: {
   visibility?: string;
   authorizedBy?: string;
   suffix?: string;
+  /** true=开、false=关、undefined=保持原值。 */
+  stream?: boolean;
 }): string {
   const s = settings(options.home);
   const existing = readAliases(s).find(item => item.alias === options.alias);
@@ -359,6 +362,8 @@ export function update(options: {
     if (options.suffix && !/^[a-z0-9.-]+$/.test(options.suffix)) throw new Error(`域名后缀不合法：${options.suffix}`);
     if (options.suffix) next.suffix = options.suffix; else delete next.suffix;
   }
+  if (options.stream === true) next.stream = true;
+  if (options.stream === false) delete next.stream;
   if (visibility === 'public' && !next.authorizedBy) throw new Error('public 别名必须保留或重新提供授权人（authorizedBy）');
   const snap = snapshotAll(s);
   upsert(s, next);

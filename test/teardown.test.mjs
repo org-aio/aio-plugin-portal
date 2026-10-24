@@ -146,6 +146,17 @@ test('删除带 suffix 覆盖的记录：校验针对自己的域，残留会被
   assert.doesNotMatch(readFileSync(join(dir, 'dns', 'aio-portal.conf'), 'utf8'), /aio\.addzero\.test/);
 });
 
+test('stream 打开时渲染 flush_interval -1，关闭后不再出现', () => {
+  const dir = home();
+  cli({AIO_PORTAL_HOME: dir}, 'add', 'sse', '--port', '8001', '--stream');
+  const site = join(dir, 'caddy', 'sites', 'portal-sse.caddy');
+  assert.match(readFileSync(site, 'utf8'), /reverse_proxy http:\/\/127\.0\.0\.1:8001 \{\n\t+flush_interval -1/);
+  cli({AIO_PORTAL_HOME: dir}, 'update', 'sse', '--no-stream');
+  assert.doesNotMatch(readFileSync(site, 'utf8'), /flush_interval/);
+  cli({AIO_PORTAL_HOME: dir}, 'update', 'sse', '--stream');
+  assert.match(readFileSync(site, 'utf8'), /flush_interval -1/);
+});
+
 test('disable 停止产出产物，enable 恢复', () => {
   const dir = home();
   cli({AIO_PORTAL_HOME: dir}, 'add', 'svc', '--port', '8004');
