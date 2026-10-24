@@ -137,12 +137,13 @@ export function removeAlias(options: {alias: string; home?: string}): string {
   if (!target) throw new Error(`未找到别名：${options.alias}`);
   const fqdn = fqdnOf(s, target);
   const before = captureArtifacts(s, options.alias);
+  // 回滚/校验都以这条记录自己的 fqdn 为准（可能带单条 suffix 覆盖）。
   const registryBefore = snapshot(s);
   const result = remove(s, options.alias);
   const removedFiles = removeCaddySite(s, options.alias);
   try {
     const rendered = render(s);
-    const verified = verifyGone(s, options.alias);
+    const verified = verifyGone(s, options.alias, target.suffix);
     const failed = verified.filter(item => !item.ok);
     if (failed.length) {
       throw new Error(`删除后仍存在残留：${failed.map(item => item.detail).join('；')}`);

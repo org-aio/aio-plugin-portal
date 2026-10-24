@@ -33,6 +33,7 @@ export interface Provider {
   verify(alias: Alias, settings: PortalSettings): Promise<VerifyResult>;
 }
 
+/** 拼 fqdn 只走这里：记录级 suffix 优先，缺省回落全局，与注册表归一规则一致。 */
 export const fqdn = (settings: PortalSettings, alias: string | Pick<Alias, 'alias' | 'suffix'>): string =>
   typeof alias === 'string' ? `${alias}.${settings.suffix}` : `${alias.alias}.${alias.suffix || settings.suffix}`;
 

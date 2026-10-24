@@ -121,6 +121,31 @@ test('单条 suffix 覆盖：内网统一域与 aio 域共存', () => {
   assert.match(readFileSync(join(dir, 'dns', 'aio-portal.conf'), 'utf8'), /gitlab\.lyokm\.test/);
 });
 
+test('删除带 suffix 覆盖的记录：校验针对自己的域，残留会被抓到', () => {
+  const dir = home();
+  cli({AIO_PORTAL_HOME: dir}, 'add', 'gitlab', '--port', '8000');
+  cli({AIO_PORTAL_HOME: dir}, 'add', 'aio', '--port', '3080', '--suffix', 'addzero.test');
+  // 解析片段在 remove 前会被整体重写，无法造残留；用「不会被重写的手工片段」模拟真实世界的漏清理场景。
+  // 校验若错用全局后缀，会去查 aio.lyokm.test 而放过 aio.addzero.test 的残留。
+  const stale = join(dir, 'dns', 'legacy-aio.conf');
+  execFileSync('mkdir', ['-p', join(dir, 'dns')]);
+  writeFileSync(stale, 'address=/aio.addzero.test/10.0.0.1\n');
+  let failure = '';
+  try {
+    cli({AIO_PORTAL_HOME: dir}, 'remove', 'aio');
+  } catch (error) {
+    failure = String(error.stderr || error.stdout || error.message);
+  }
+  assert.match(failure, /aio\.addzero\.test/);
+  // 失败整体回滚：记录与站点都还在。
+  assert.ok(existsSync(join(dir, 'caddy', 'sites', 'portal-aio.caddy')));
+  assert.match(readFileSync(join(dir, 'aliases.json'), 'utf8'), /"aio"/);
+  writeFileSync(stale, '');
+  cli({AIO_PORTAL_HOME: dir}, 'remove', 'aio');
+  assert.ok(!files(dir).includes('portal-aio.caddy'));
+  assert.doesNotMatch(readFileSync(join(dir, 'dns', 'aio-portal.conf'), 'utf8'), /aio\.addzero\.test/);
+});
+
 test('disable 停止产出产物，enable 恢复', () => {
   const dir = home();
   cli({AIO_PORTAL_HOME: dir}, 'add', 'svc', '--port', '8004');
