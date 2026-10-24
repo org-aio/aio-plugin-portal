@@ -1,9 +1,20 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
-import {mkdtempSync, writeFileSync, readFileSync, existsSync, readdirSync} from 'node:fs';
+import {mkdtempSync, writeFileSync, readFileSync, existsSync, readdirSync, chmodSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+
+/**
+ * 跨平台的假 dnsmasq：CI runner 上不保证装了 dnsmasq。
+ * 生成一个可执行的 node 脚本，收到任何参数都返回 0，并被直接作为 --conf-file 的目标调用。
+ */
+const fakeDnsmasq = src => {
+  const file = join(src, 'fake-dnsmasq.mjs');
+  writeFileSync(file, '#!/usr/bin/env node\nprocess.exit(0);\n');
+  chmodSync(file, 0o755);
+  return {binary: file};
+};
 
 const cli = (env, ...args) =>
   execFileSync(process.execPath, ['dist/cli.mjs', ...args], {encoding: 'utf8', env: {...process.env, ...env}, stdio: ['ignore', 'pipe', 'pipe']}).trim();
@@ -147,7 +158,7 @@ test('解析器校验失败时整体回滚，不留半完成产物', () => {
   const dir = home();
   writeFileSync(join(dir, 'aio-portal.json'), JSON.stringify({
     suffix: 'lyokm.test', mode: 'lan', lanIp: '10.0.0.1',
-    resolver: {port: 5353, upstreams: ['1.1.1.1'], service: '', fragment: true},
+    resolver: {port: 5353, upstreams: ['1.1.1.1'], service: '', fragment: true, dnsmasqBinary: fakeDnsmasq(dir).binary},
     portal: {mapPrefix: '10-alias', reload: true},
     gateway: {adapter: 'none'},
     caddy: {sitesDir: join(dir, 'caddy', 'sites'), bind: '10.0.0.1', allow: ['10.0.0.0/24']},
@@ -159,7 +170,7 @@ test('解析器校验失败时整体回滚，不留半完成产物', () => {
 
   // 再把解析器二进制改坏，模拟 reload 阶段失败
   const cfg = JSON.parse(readFileSync(join(dir, 'aio-portal.json'), 'utf8'));
-  cfg.resolver.dnsmasqBinary = '/nonexistent/dnsmasq';
+  cfg.resolver.dnsmasqBinary = join(dir, 'missing-binary');
   writeFileSync(join(dir, 'aio-portal.json'), JSON.stringify(cfg));
 
   assert.throws(() => cli({AIO_PORTAL_HOME: dir}, 'add', 'broken', '--port', '8002'), /已回滚/);
@@ -174,14 +185,14 @@ test('回滚后重试仍可成功（可恢复）', () => {
   const dir = home();
   writeFileSync(join(dir, 'aio-portal.json'), JSON.stringify({
     suffix: 'lyokm.test', mode: 'lan', lanIp: '10.0.0.1',
-    resolver: {port: 5353, upstreams: ['1.1.1.1'], service: '', fragment: true, dnsmasqBinary: '/nonexistent/dnsmasq'},
+    resolver: {port: 5353, upstreams: ['1.1.1.1'], service: '', fragment: true, dnsmasqBinary: join(dir, 'missing-binary')},
     portal: {mapPrefix: '10-alias', reload: true}, gateway: {adapter: 'none'},
     caddy: {sitesDir: join(dir, 'caddy', 'sites'), bind: '10.0.0.1', allow: ['10.0.0.0/24']},
   }));
   assert.throws(() => cli({AIO_PORTAL_HOME: dir}, 'add', 'retry', '--port', '8001'));
   // 修好二进制后重试应当成功
   const cfg = JSON.parse(readFileSync(join(dir, 'aio-portal.json'), 'utf8'));
-  cfg.resolver.dnsmasqBinary = '/usr/sbin/dnsmasq';
+  cfg.resolver.dnsmasqBinary = fakeDnsmasq(dir).binary;
   cfg.resolver.service = '';
   writeFileSync(join(dir, 'aio-portal.json'), JSON.stringify(cfg));
   cli({AIO_PORTAL_HOME: dir}, 'add', 'retry', '--port', '8001');
