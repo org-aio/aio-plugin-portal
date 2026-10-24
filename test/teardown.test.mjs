@@ -6,14 +6,24 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 
 /**
- * 跨平台的假 dnsmasq：CI runner 上不保证装了 dnsmasq。
- * 生成一个可执行的 node 脚本，收到任何参数都返回 0，并被直接作为 --conf-file 的目标调用。
+ * 跨平台的假 dnsmasq：CI runner 上不保证装了 dnsmasq，Windows 也不支持 shebang 脚本直接执行。
+ * 因此生成两层：真正干活的 .mjs，以及按平台选择的一层包装。
+ * - POSIX：可执行的 sh 脚本，被直接 spawn 时以 sh 解释；
+ * - Windows：.cmd 包装，由 cmd 解释后转给 node。
+ * 两者都忽略参数并返回 0，足以让 `--test` 这一步通过。
  */
 const fakeDnsmasq = src => {
-  const file = join(src, 'fake-dnsmasq.mjs');
-  writeFileSync(file, '#!/usr/bin/env node\nprocess.exit(0);\n');
-  chmodSync(file, 0o755);
-  return {binary: file};
+  const impl = join(src, 'fake-dnsmasq.mjs');
+  writeFileSync(impl, 'process.exit(0);\n');
+  if (process.platform === 'win32') {
+    const cmd = join(src, 'fake-dnsmasq.cmd');
+    writeFileSync(cmd, `@echo off\r\n"${process.execPath}" "${impl}" %*\r\nexit /b 0\r\n`);
+    return {binary: cmd};
+  }
+  const sh = join(src, 'fake-dnsmasq.sh');
+  writeFileSync(sh, `#!/bin/sh\nexec "${process.execPath}" "${impl}" "$@"\n`);
+  chmodSync(sh, 0o755);
+  return {binary: sh};
 };
 
 const cli = (env, ...args) =>
