@@ -6,20 +6,22 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 
 /**
- * 跨平台的假 dnsmasq：CI runner 上不保证装了 dnsmasq，Windows 也不支持 shebang 脚本直接执行。
- * 因此生成两层：真正干活的 .mjs，以及按平台选择的一层包装。
- * - POSIX：可执行的 sh 脚本，被直接 spawn 时以 sh 解释；
- * - Windows：.cmd 包装，由 cmd 解释后转给 node。
- * 两者都忽略参数并返回 0，足以让 `--test` 这一步通过。
+ * 跨平台的假 dnsmasq。
+ *
+ * 被测代码用 `execFileSync(binary, ['--test', '--conf-file=…'])` 调用解析器，**不经过 shell**，
+ * 所以假二进制必须本身能被直接执行：
+ * - POSIX：可执行 sh 包装（首行 shebang）；
+ * - Windows：`execFileSync` 无法直接执行 .cmd/.bat（EINVAL）或 shebang 脚本（EFTYPE），
+ *   改用系统自带的 `cmd.exe`，它忽略不认识的自定义参数并返回 0。
+ * 两种情况都只依赖操作系统自带能力，不依赖 runner 是否装了 dnsmasq。
  */
 const fakeDnsmasq = src => {
-  const impl = join(src, 'fake-dnsmasq.mjs');
-  writeFileSync(impl, 'process.exit(0);\n');
   if (process.platform === 'win32') {
-    const cmd = join(src, 'fake-dnsmasq.cmd');
-    writeFileSync(cmd, `@echo off\r\n"${process.execPath}" "${impl}" %*\r\nexit /b 0\r\n`);
+    const cmd = process.env.ComSpec || 'C:\\Windows\\System32\\cmd.exe';
     return {binary: cmd};
   }
+  const impl = join(src, 'fake-dnsmasq.mjs');
+  writeFileSync(impl, 'process.exit(0);\n');
   const sh = join(src, 'fake-dnsmasq.sh');
   writeFileSync(sh, `#!/bin/sh\nexec "${process.execPath}" "${impl}" "$@"\n`);
   chmodSync(sh, 0o755);
